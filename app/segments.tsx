@@ -78,7 +78,7 @@ export function SegmentList() {
                 </a>
                 <span role="cell" className="muted">{size(segment)}</span>
                 <span role="cell" className="muted">{flags.length ? `${flags.length} ${flags.length === 1 ? 'flag' : 'flags'}` : 'No flags'}</span>
-                <span role="cell" className="num muted">{ago(segment.updatedAt) || 'Earlier'}</span>
+                <span role="cell" className="num muted">{ago(segment.updatedAt) || '—'}</span>
               </div>
             );
           })}
@@ -142,7 +142,6 @@ export function SegmentPage({ segmentKey }: { segmentKey: string }) {
 
   return (
     <div className="page page-flag">
-      <a className="back" href={href(env.id, 'segments')}><Icon name="back" size={14} />Segments</a>
       <header className="flag-head">
         <div className="flag-title">
           <h1>{draft.name || draft.key}</h1>

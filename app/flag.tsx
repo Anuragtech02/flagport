@@ -486,7 +486,6 @@ export function FlagPage({ flagKey }: { flagKey: string }) {
 
   return (
     <div className="page page-flag">
-      <a className="back" href={href(env.id, 'flags')}><Icon name="back" size={14} />Flags</a>
       <header className="flag-head">
         <div className="flag-title">
           <h1>{draft.name || draft.key}</h1>

@@ -254,6 +254,16 @@ export function Empty({ title, children, action }: { title: string; children: Re
   );
 }
 
+/** Stands in for a list while it loads, so the page does not jump when the data arrives. */
+export function Skeleton({ rows = 5 }: { rows?: number }) {
+  return (
+    <div className="skeleton" aria-busy="true" aria-label="Loading">
+      <div className="skeleton-title" />
+      <div className="skeleton-table">{Array.from({ length: rows }, (_, i) => <div key={i} style={{ animationDelay: `${i * 90}ms` }} />)}</div>
+    </div>
+  );
+}
+
 /** Tiny bar chart of daily totals. */
 export function Spark({ values }: { values: number[] }) {
   const max = Math.max(1, ...values);

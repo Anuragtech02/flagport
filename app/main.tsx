@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { api, auth, type EnvSummary, type Environment } from './api';
 import { AppContext, go, href, useRoute, type App, type Section } from './state';
-import { Button, CopyButton, Field, Icon, Modal, ModalForm, Toasts, useToast } from './ui';
+import { Button, CopyButton, Field, Icon, Modal, ModalForm, Skeleton, Toasts, useToast } from './ui';
+import { envColor } from './model';
 import { FlagList } from './flags';
 import { FlagPage } from './flag';
 import { SegmentList, SegmentPage } from './segments';
@@ -191,6 +192,58 @@ function NewEnvironment({ onClose, onCreated }: { onClose: () => void; onCreated
   );
 }
 
+function EnvSwitcher({ envs, currentId, sectionFor, onNew }: { envs: EnvSummary[] | null; currentId: string | null; sectionFor: Section; onNew: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [filter, setFilter] = useState('');
+  const current = envs?.find((e) => e.id === currentId);
+  const close = () => {
+    setOpen(false);
+    setFilter('');
+  };
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (event: KeyboardEvent) => event.key === 'Escape' && close();
+    addEventListener('keydown', onKey);
+    return () => removeEventListener('keydown', onKey);
+  }, [open]);
+  const shown = (envs ?? []).filter((e) => e.name.toLowerCase().includes(filter.trim().toLowerCase()));
+  return (
+    <div className="env-switch">
+      <button type="button" className="env-current" aria-haspopup="menu" aria-expanded={open} onClick={() => (open ? close() : setOpen(true))} disabled={!envs} title={current?.name}>
+        <span className="env-dot" style={{ background: current ? envColor(current.id) : undefined }} />
+        <span className="env-text">
+          <span className="env-label">Environment</span>
+          <span className="env-name">{current?.name ?? (envs?.length === 0 ? 'None yet' : 'Loading…')}</span>
+        </span>
+        <Icon name="down" size={14} />
+      </button>
+      {open && (
+        <>
+          <div className="scrim" onClick={close} />
+          <div className="menu" role="menu" aria-label="Environments">
+            {(envs?.length ?? 0) > 6 && (
+              <input className="menu-filter" autoFocus aria-label="Find an environment" placeholder="Find an environment" value={filter} onChange={(event) => setFilter(event.target.value)} />
+            )}
+            <div className="menu-list">
+              {shown.map((e) => (
+                <a key={e.id} role="menuitem" href={href(e.id, sectionFor)} className={e.id === currentId ? 'current' : ''} title={e.name} onClick={close}>
+                  <span className="env-dot" style={{ background: envColor(e.id) }} />
+                  <span className="menu-name">{e.name}</span>
+                  {e.id === currentId && <Icon name="check" size={14} />}
+                </a>
+              ))}
+              {shown.length === 0 && <p className="menu-none">No environment matches “{filter}”.</p>}
+            </div>
+            <button type="button" role="menuitem" className="menu-new" onClick={() => { close(); onNew(); }}>
+              <Icon name="plus" size={14} />New environment
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 const NAV: { section: Section; label: string; icon: string }[] = [
   { section: 'flags', label: 'Flags', icon: 'flag' },
   { section: 'segments', label: 'Segments', icon: 'segment' },
@@ -205,7 +258,6 @@ function Workspace({ onSignOut }: { onSignOut: () => void }) {
   const [envs, setEnvs] = useState<EnvSummary[] | null>(null);
   const [env, setEnv] = useState<Environment | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
-  const [menu, setMenu] = useState(false);
   const [creating, setCreating] = useState(false);
   const [palette, setPalette] = useState(false);
   const [leaving, setLeaving] = useState(false);
@@ -267,11 +319,16 @@ function Workspace({ onSignOut }: { onSignOut: () => void }) {
   }, [env, envs]);
 
   const connected = env ? env.connections.server + env.connections.js + env.connections.mobile : 0;
-  const current = envs?.find((e) => e.id === envId);
+  const pageLabel = NAV.find((item) => item.section === route.section)!.label;
+  const item = env && route.key ? (route.section === 'flags' ? env.flags[route.key] : env.segments[route.key]) : null;
+  const itemLabel = route.key ? item?.name || route.key : null;
+  useEffect(() => {
+    document.title = [itemLabel, pageLabel, env?.name, 'Flagport'].filter(Boolean).join(' · ');
+  }, [itemLabel, pageLabel, env?.name]);
 
   let screen;
   if (failed) screen = <div className="page"><div className="notice notice-error"><Icon name="alert" />{failed}</div></div>;
-  else if (!envs || (envId && !env)) screen = <div className="page"><div className="loading" aria-label="Loading" /></div>;
+  else if (!envs || (envId && !env)) screen = <div className="page"><Skeleton /></div>;
   else if (!envs.length || !env) {
     screen = (
       <div className="page">
@@ -293,29 +350,7 @@ function Workspace({ onSignOut }: { onSignOut: () => void }) {
       <div className="shell">
         <aside className="side">
           <Brand />
-          <div className="env-switch">
-            <button type="button" className="env-current" aria-haspopup="menu" aria-expanded={menu} onClick={() => setMenu((open) => !open)} disabled={!envs}>
-              <span className={`pulse ${connected ? 'pulse-on' : ''}`} />
-              <span className="env-name">{current?.name ?? (envs?.length === 0 ? 'No environment' : 'Loading…')}</span>
-              <Icon name="down" size={14} />
-            </button>
-            {menu && (
-              <>
-                <div className="scrim" onClick={() => setMenu(false)} />
-                <div className="menu" role="menu">
-                  {(envs ?? []).map((e) => (
-                    <a key={e.id} role="menuitem" href={href(e.id, route.key ? 'flags' : route.section)} className={e.id === envId ? 'current' : ''} onClick={() => setMenu(false)}>
-                      {e.name}
-                      {e.id === envId && <Icon name="check" size={14} />}
-                    </a>
-                  ))}
-                  <button type="button" role="menuitem" onClick={() => { setMenu(false); setCreating(true); }}>
-                    <Icon name="plus" size={14} />New environment
-                  </button>
-                </div>
-              </>
-            )}
-          </div>
+          <EnvSwitcher envs={envs} currentId={envId} sectionFor={route.key ? 'flags' : route.section} onNew={() => setCreating(true)} />
 
           <nav aria-label="Workspace">
             {NAV.map((item) => (
@@ -329,13 +364,6 @@ function Workspace({ onSignOut }: { onSignOut: () => void }) {
           </nav>
 
           <div className="side-foot">
-            {env && (
-              <a className="live" href={href(env.id, 'connect')} title={`${env.connections.server} server, ${env.connections.js} browser, ${env.connections.mobile} mobile`}>
-                <span className={`pulse ${connected ? 'pulse-on' : ''}`} />
-                {connected ? `${connected} SDK${connected === 1 ? '' : 's'} connected` : 'No SDKs connected'}
-              </a>
-            )}
-            <button type="button" onClick={() => setPalette(true)}><Icon name="search" />Go to<kbd>{navigator.platform.includes('Mac') ? '⌘K' : 'Ctrl K'}</kbd></button>
             <a href={REPO} target="_blank" rel="noreferrer"><Icon name="external" />Source and docs</a>
             <button type="button" onClick={async () => { await navigator.clipboard.writeText(auth.key ?? '').then(() => toast('Workspace key copied'), () => toast('Could not copy the key', 'error')); }}>
               <Icon name="key" />Copy workspace key
@@ -343,7 +371,31 @@ function Workspace({ onSignOut }: { onSignOut: () => void }) {
             <button type="button" onClick={() => setLeaving(true)}><Icon name="out" />Sign out</button>
           </div>
         </aside>
-        <div className="main">{screen}</div>
+        <div className="main">
+          {env && (
+            <header className="topbar">
+              <nav className="crumbs" aria-label="Breadcrumb">
+                <span className="crumb" title={env.name}><span className="env-dot" style={{ background: envColor(env.id) }} />{env.name}</span>
+                <span className="crumb-sep" aria-hidden="true">/</span>
+                {itemLabel ? <a className="crumb" href={href(env.id, route.section)}>{pageLabel}</a> : <span className="crumb crumb-here" aria-current="page">{pageLabel}</span>}
+                {itemLabel && (
+                  <>
+                    <span className="crumb-sep" aria-hidden="true">/</span>
+                    <span className="crumb crumb-here" aria-current="page" title={itemLabel}>{itemLabel}</span>
+                  </>
+                )}
+              </nav>
+              <a className="live" href={href(env.id, 'connect')} title={`${env.connections.server} server, ${env.connections.js} browser, ${env.connections.mobile} mobile`}>
+                <span className={`pulse ${connected ? 'pulse-on' : ''}`} />
+                {connected ? `${connected} SDK${connected === 1 ? '' : 's'} connected` : 'No SDKs connected'}
+              </a>
+              <button type="button" className="searchbtn" onClick={() => setPalette(true)}>
+                <Icon name="search" size={14} />Search<kbd>{navigator.platform.includes('Mac') ? '⌘K' : 'Ctrl K'}</kbd>
+              </button>
+            </header>
+          )}
+          {screen}
+        </div>
       </div>
 
       {creating && (

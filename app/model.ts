@@ -12,6 +12,14 @@ export function variationColor(flag: Pick<Flag, 'variations'>, index: number): s
   return PALETTE[index % PALETTE.length];
 }
 
+/** Environments get a colour from their id, so Production never looks like Staging at a glance. */
+const ENV_COLORS = ['#C8F53A', '#7CC7FF', '#FFB454', '#D7A6FF', '#FF8FA3', '#7FE0C4', '#F2E36B', '#9FA8FF'];
+export function envColor(id: string): string {
+  let hash = 0;
+  for (const char of id) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
+  return ENV_COLORS[hash % ENV_COLORS.length];
+}
+
 export type FlagType = 'boolean' | 'string' | 'number' | 'json';
 export function flagType(flag: Pick<Flag, 'variations'>): FlagType {
   const types = new Set(flag.variations.map((v) => typeof v));

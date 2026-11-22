@@ -250,13 +250,15 @@ export function FlagList() {
             </div>
             {flags.map((flag) => {
               const reach = audience(flag);
+              const named = !!flag.name && flag.name !== flag.key;
               return (
                 <div className="trow" role="row" key={flag.key}>
                   <span role="cell"><Toggle on={flag.on} label={`${flag.on ? 'Turn off' : 'Turn on'} ${flag.key}`} onChange={() => setSwitching(flag)} /></span>
                   <a role="cell" className="flag-cell" href={href(env.id, 'flags', flag.key)}>
-                    <span className="flag-name">{flag.name || flag.key}</span>
+                    <span className={`flag-name ${named ? '' : 'mono'}`}>{named ? flag.name : flag.key}</span>
                     <span className="flag-key">
-                      {flag.key}
+                      {named && <span className="flag-key-text">{flag.key}</span>}
+                      {(flag.tags ?? []).slice(0, 3).map((tag) => <em key={tag} className="tag">{tag}</em>)}
                       {!reach.browser && !reach.mobile ? <em>server only</em> : !reach.browser ? <em>server and mobile</em> : !reach.mobile ? <em>server and browser</em> : null}
                     </span>
                   </a>
@@ -265,7 +267,7 @@ export function FlagList() {
                     <Spark values={dailyTotals(env.series[flag.key], days)} />
                     <span>{total(flag) ? compact(total(flag)) : 'None'}</span>
                   </span>
-                  <span role="cell" className="num muted">{ago(flag.updatedAt) || 'Earlier'}</span>
+                  <span role="cell" className="num muted">{ago(flag.updatedAt) || '—'}</span>
                 </div>
               );
             })}
