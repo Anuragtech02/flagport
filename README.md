@@ -39,9 +39,9 @@ sponsored by LaunchDarkly. LaunchDarkly is a trademark of its owner.
 ## Use the hosted server
 
 A hosted instance runs at <https://flagport.anuragpal.cloud>. Open the
-dashboard, create a workspace, and you get a workspace key. There are no
-accounts and no emails: the key is the only way into your workspace and cannot
-be recovered, so save it.
+dashboard, create a workspace, and you get an access key as its first owner.
+There are no accounts and no emails: add a member for each person or service,
+and each gets a key of their own with a role.
 
 The hosted instance has no billing, no support contract and no uptime
 guarantee. For anything you depend on, self-host.
@@ -96,8 +96,9 @@ the `workers.dev` address keeps working alongside it.
 - `src/environment.ts`: one Durable Object per environment. It holds that
   environment's flags and segments, keeps the SDK streams open and pushes
   every change to them.
-- `src/registry.ts`: one Durable Object that lists workspaces and the
-  environments each one owns. Only a hash of each workspace key is stored.
+- `src/registry.ts`: one Durable Object that holds workspaces, their members,
+  their environments and the audit log. Only a hash of each access key is
+  stored.
 - `src/evaluate.ts`: evaluates flags for browser and mobile SDKs with
   LaunchDarkly's own open-source evaluator.
 - `src/ldimport.ts`: converts flags and segments read from the LaunchDarkly
@@ -111,20 +112,30 @@ the way in or out.
 ### Admin API
 
 Every route except the first two needs `Authorization: Bearer <key>`, where
-the key is a workspace key or the admin token. A key only ever sees its own
-workspace's environments.
+the key is a member's access key or the admin token. A key only ever sees its
+own workspace.
+
+Roles, each including the one before: `reader` can look, `writer` can change
+flags and segments, `admin` can also manage environments and members, and
+`owner` can also manage other owners. The admin token is always an owner.
 
 | Route | Does |
 | --- | --- |
 | `GET /api/instance` | Says whether sign-ups are open |
 | `POST /api/workspaces` | Creates a workspace and returns its key (only when sign-ups are open) |
+| `GET /api/me` | Who the key belongs to, and its role |
+| `GET /api/members` | Lists members |
+| `POST /api/members` | Adds a member and returns their key once: `{ "name": "Asha", "role": "writer" }` |
+| `PATCH /api/members/:id` | Changes a member's name or role |
+| `POST /api/members/:id/rotate` | Replaces a member's key; the old one stops working |
+| `DELETE /api/members/:id` | Removes a member |
+| `GET /api/audit` | The audit log, newest first. Filters: `env`, `kind`, `key`, `actor`, `before`, `limit`. `format=csv` exports it |
 | `GET /api/envs` | Lists environments |
 | `POST /api/envs` | Creates an environment: `{ "name": "Production" }` |
 | `GET /api/envs/:id` | Keys, flags, segments, connected SDKs and evaluation counts |
 | `PATCH /api/envs/:id` | Renames the environment: `{ "name": "Staging" }` |
-| `GET /api/envs/:id/activity` | The last 200 changes to flags and segments |
 | `DELETE /api/envs/:id` | Deletes the environment and turns its keys off |
-| `PUT /api/envs/:id/flags/:key` | Creates or replaces a flag. `?comment=` adds a note to the activity log |
+| `PUT /api/envs/:id/flags/:key` | Creates or replaces a flag. `?comment=` adds a note to the audit log; `?ifVersion=` refuses the save if the flag changed since that version |
 | `DELETE /api/envs/:id/flags/:key` | Deletes a flag |
 | `PUT` and `DELETE /api/envs/:id/segments/:key` | The same, for segments |
 | `POST /api/envs/:id/import` | Imports from LaunchDarkly: `{ apiToken, projectKey, environmentKey }` |
@@ -143,7 +154,7 @@ With the dev server running:
 
 ```bash
 npm test          # the importer, checked by the real SDK
-npm run test:e2e  # real LaunchDarkly SDKs against the running server, plus workspace isolation
+npm run test:e2e  # real LaunchDarkly SDKs against the running server, plus workspaces, roles and the audit log
 ```
 
 The end-to-end tests also run against a deployed instance:
@@ -152,11 +163,13 @@ workspace test needs sign-ups open.
 
 ## Known limits
 
-- A workspace key cannot be recovered or rotated yet.
-- One key per workspace: there are no team members or roles.
+- Members sign in with keys, not single sign-on. A lost key is replaced by an
+  admin; it cannot be recovered.
+- Roles apply to the whole workspace, not per environment or per flag.
+- No approvals or scheduled changes yet.
 - A workspace can hold 10 environments. The instance owner is not limited.
 - Sign-ups are rate limited per network, and that is the only abuse control.
-- The activity log records what changed and when, not who: a workspace has one key.
+- The audit log keeps the newest 5,000 entries per workspace.
 
 ## Licence
 

@@ -1,43 +1,8 @@
 // Activity, connecting SDKs, and settings.
 import { useEffect, useState } from 'react';
-import { api, auth, type Activity } from './api';
-import { go, href, useApp, useEnv } from './state';
-import { Button, CopyButton, Empty, Field, Icon, Modal, ModalForm, useToast } from './ui';
-import { ActivityList } from './flag';
-
-export function ActivityPage() {
-  const env = useEnv();
-  const [entries, setEntries] = useState<Activity[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  useEffect(() => {
-    api.activity(env.id).then(setEntries, (e) => setError(e.message));
-  }, [env.id, env.flags, env.segments]);
-
-  const groups = new Map<string, Activity[]>();
-  for (const entry of entries ?? []) {
-    const day = new Date(entry.at).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
-    groups.set(day, [...(groups.get(day) ?? []), entry]);
-  }
-  return (
-    <div className="page page-narrow">
-      <header className="page-head">
-        <div>
-          <h1>Activity</h1>
-          <p className="muted">Every change to flags and segments in {env.name}, newest first. The last 200 are kept on screen.</p>
-        </div>
-      </header>
-      {error ? <div className="notice notice-error"><Icon name="alert" />{error}</div>
-        : !entries ? <div className="loading" aria-label="Loading" />
-        : entries.length === 0 ? <Empty title="Nothing has changed yet">When someone creates, edits, switches or deletes a flag, it is recorded here with the note they added.</Empty>
-        : [...groups].map(([day, list]) => (
-          <section key={day} className="activity-day">
-            <h2>{day}</h2>
-            <ActivityList entries={list} envId={env.id} showKey />
-          </section>
-        ))}
-    </div>
-  );
-}
+import { api, auth } from './api';
+import { go, href, useApp, useCan, useEnv } from './state';
+import { Button, CopyButton, Field, Modal, ModalForm, useToast } from './ui';
 
 // ---- Connect SDKs ------------------------------------------------------------------
 
@@ -109,6 +74,7 @@ export function ConnectPage() {
 
 export function SettingsPage() {
   const { reload, reloadEnvs } = useApp();
+  const can = useCan();
   const env = useEnv();
   const toast = useToast();
   const [name, setName] = useState(env.name);
@@ -138,20 +104,20 @@ export function SettingsPage() {
           }}
         >
           <input aria-label="Environment name" maxLength={80} value={name} onChange={(event) => setName(event.target.value)} />
-          <Button type="submit" disabled={!name.trim() || name.trim() === env.name}>Rename</Button>
+          <Button type="submit" disabled={!can('admin') || !name.trim() || name.trim() === env.name} title={can('admin') ? undefined : 'Renaming needs the admin role'}>Rename</Button>
         </form>
       </section>
 
       <section className="setting">
         <h2>Import from LaunchDarkly</h2>
         <p className="muted">Copies flags, targeting rules and segments from one LaunchDarkly environment into {env.name}. A flag that already exists here with the same key is replaced. Your LaunchDarkly account is only read.</p>
-        <Button icon="plus" onClick={() => setImporting(true)}>Import flags and segments</Button>
+        <Button icon="plus" disabled={!can('writer')} title={can('writer') ? undefined : 'Importing needs the writer role'} onClick={() => setImporting(true)}>Import flags and segments</Button>
       </section>
 
       <section className="setting">
-        <h2>Workspace key</h2>
-        <p className="muted">The key you signed in with. It opens every environment in this workspace and cannot be recovered or reset, so keep a copy in a password manager.</p>
-        <CopyButton value={auth.key ?? ''} label="Copy workspace key" small={false} />
+        <h2>Your access key</h2>
+        <p className="muted">The key you signed in with. It cannot be shown again by the server, so keep a copy in a password manager. If it leaks or is lost, an admin can replace it on the <a href={href(env.id, 'team')}>Team</a> page.</p>
+        <CopyButton value={auth.key ?? ''} label="Copy my access key" small={false} />
       </section>
 
       <section className="setting">
@@ -160,7 +126,7 @@ export function SettingsPage() {
             <strong>Delete {env.name}</strong>
             <p className="muted">Its keys stop working at once, connected SDKs are cut off, and every flag and segment in it is erased.</p>
           </div>
-          <Button kind="danger" onClick={() => { setTyped(''); setDeleting(true); }}>Delete environment</Button>
+          <Button kind="danger" disabled={!can('admin')} title={can('admin') ? undefined : 'Deleting an environment needs the admin role'} onClick={() => { setTyped(''); setDeleting(true); }}>Delete environment</Button>
         </div>
       </section>
 

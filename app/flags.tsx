@@ -2,7 +2,7 @@
 import { useMemo, useState } from 'react';
 import { api, type Flag } from './api';
 import { ago, audience, compact, describeFlag, describeServe, flagType, lastDays, show, variationColor, type FlagType } from './model';
-import { go, href, useApp, useEnv } from './state';
+import { go, href, useApp, useCan, useEnv } from './state';
 import { Button, Empty, Field, Icon, Modal, ModalForm, Spark, Swatch, Toggle, useToast } from './ui';
 
 export function VariationPill({ flag, index }: { flag: Pick<Flag, 'variations'>; index: number }) {
@@ -45,7 +45,7 @@ export function SwitchFlag({ flag, onClose }: { flag: Flag; onClose: () => void 
         onClose={onClose}
         onSubmit={async () => {
           const { version, updatedAt, deleted, key, ...body } = after;
-          await api.saveFlag(env!.id, flag.key, body, comment.trim());
+          await api.saveFlag(env!.id, flag.key, body, comment.trim(), version);
           await reload();
           toast(`${flag.key} is ${turningOn ? 'on' : 'off'}`);
         }}
@@ -178,6 +178,7 @@ type Sort = 'changed' | 'name' | 'evaluations';
 
 export function FlagList() {
   const env = useEnv();
+  const canWrite = useCan()('writer');
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<Filter>('all');
   const [sort, setSort] = useState<Sort>('changed');
@@ -204,7 +205,7 @@ export function FlagList() {
           <h1>Flags</h1>
           <p className="muted">{all.length === 0 ? `Nothing in ${env.name} yet.` : `${all.length} in ${env.name}, ${onCount} switched on.`}</p>
         </div>
-        <Button kind="primary" icon="plus" onClick={() => setCreating(true)}>New flag</Button>
+        <Button kind="primary" icon="plus" disabled={!canWrite} title={canWrite ? undefined : 'Creating flags needs the writer role'} onClick={() => setCreating(true)}>New flag</Button>
       </header>
 
       {all.length === 0 ? (
@@ -253,7 +254,7 @@ export function FlagList() {
               const named = !!flag.name && flag.name !== flag.key;
               return (
                 <div className="trow" role="row" key={flag.key}>
-                  <span role="cell"><Toggle on={flag.on} label={`${flag.on ? 'Turn off' : 'Turn on'} ${flag.key}`} onChange={() => setSwitching(flag)} /></span>
+                  <span role="cell"><Toggle on={flag.on} disabled={!canWrite} label={`${flag.on ? 'Turn off' : 'Turn on'} ${flag.key}`} onChange={() => setSwitching(flag)} /></span>
                   <a role="cell" className="flag-cell" href={href(env.id, 'flags', flag.key)}>
                     <span className={`flag-name ${named ? '' : 'mono'}`}>{named ? flag.name : flag.key}</span>
                     <span className="flag-key">

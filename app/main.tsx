@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { api, auth, type EnvSummary, type Environment } from './api';
+import { api, auth, type EnvSummary, type Environment, type Me } from './api';
 import { AppContext, go, href, useRoute, type App, type Section } from './state';
 import { Button, CopyButton, Field, Icon, Modal, ModalForm, Skeleton, Toasts, useToast } from './ui';
 import { envColor } from './model';
 import { FlagList } from './flags';
 import { FlagPage } from './flag';
 import { SegmentList, SegmentPage } from './segments';
-import { ActivityPage, ConnectPage, SettingsPage } from './pages';
+import { ConnectPage, SettingsPage } from './pages';
+import { AuditPage } from './audit';
+import { TeamPage } from './team';
 
 const REPO = 'https://github.com/Anuragtech02/flagport';
 
@@ -94,7 +96,7 @@ function SignIn({ signups, onSignedIn }: { signups: boolean; onSignedIn: () => v
             });
           }}
         >
-          <Field label={signups ? 'Workspace key' : 'Admin token'} error={error}>
+          <Field label={signups ? 'Access key' : 'Access key or admin token'} error={error}>
             {(id) => <input id={id} type="password" autoComplete="current-password" required autoFocus value={value} onChange={(event) => setValue(event.target.value)} />}
           </Field>
           <Button kind="primary" type="submit" disabled={busy || !value.trim()}>Open workspace</Button>
@@ -247,8 +249,9 @@ function EnvSwitcher({ envs, currentId, sectionFor, onNew }: { envs: EnvSummary[
 const NAV: { section: Section; label: string; icon: string }[] = [
   { section: 'flags', label: 'Flags', icon: 'flag' },
   { section: 'segments', label: 'Segments', icon: 'segment' },
-  { section: 'activity', label: 'Activity', icon: 'activity' },
+  { section: 'activity', label: 'Audit log', icon: 'activity' },
   { section: 'connect', label: 'Connect SDKs', icon: 'plug' },
+  { section: 'team', label: 'Team', icon: 'shield' },
   { section: 'settings', label: 'Settings', icon: 'settings' },
 ];
 
@@ -256,6 +259,7 @@ function Workspace({ onSignOut }: { onSignOut: () => void }) {
   const route = useRoute();
   const toast = useToast();
   const [envs, setEnvs] = useState<EnvSummary[] | null>(null);
+  const [me, setMe] = useState<Me | null>(null);
   const [env, setEnv] = useState<Environment | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
@@ -270,6 +274,7 @@ function Workspace({ onSignOut }: { onSignOut: () => void }) {
 
   useEffect(() => {
     reloadEnvs().catch((e) => setFailed(e.message));
+    api.me().then(setMe, (e) => setFailed(e.message));
   }, [reloadEnvs]);
 
   // The address decides the environment; without one, the first environment is opened.
@@ -306,7 +311,7 @@ function Workspace({ onSignOut }: { onSignOut: () => void }) {
     return () => removeEventListener('keydown', onKey);
   }, []);
 
-  const app: App = useMemo(() => ({ envs: envs ?? [], env, route, reload, reloadEnvs, signOut: onSignOut }), [envs, env, route, reload, reloadEnvs, onSignOut]);
+  const app: App = useMemo(() => ({ envs: envs ?? [], env, route, me: me ?? { id: '', name: '', role: 'reader' }, reload, reloadEnvs, signOut: onSignOut }), [envs, env, route, me, reload, reloadEnvs, onSignOut]);
 
   const commands = useMemo<Command[]>(() => {
     if (!env) return [];
@@ -328,20 +333,22 @@ function Workspace({ onSignOut }: { onSignOut: () => void }) {
 
   let screen;
   if (failed) screen = <div className="page"><div className="notice notice-error"><Icon name="alert" />{failed}</div></div>;
-  else if (!envs || (envId && !env)) screen = <div className="page"><Skeleton /></div>;
+  else if (!envs || !me || (envId && !env)) screen = <div className="page"><Skeleton /></div>;
   else if (!envs.length || !env) {
     screen = (
       <div className="page">
         <div className="welcome">
           <h1>Create your first environment</h1>
           <p className="muted">An environment holds a set of flags and has its own SDK keys. Start with the one your app runs in today; you can add Staging later.</p>
-          <Button kind="primary" icon="plus" onClick={() => setCreating(true)}>New environment</Button>
+          <Button kind="primary" icon="plus" disabled={me.role !== 'admin' && me.role !== 'owner'} onClick={() => setCreating(true)}>New environment</Button>
+          {me.role !== 'admin' && me.role !== 'owner' && <p className="muted">Creating an environment needs the admin role. Ask an admin or owner of this workspace.</p>}
         </div>
       </div>
     );
   } else if (route.section === 'flags') screen = route.key ? <FlagPage flagKey={route.key} key={route.key} /> : <FlagList />;
   else if (route.section === 'segments') screen = route.key ? <SegmentPage segmentKey={route.key} key={route.key} /> : <SegmentList />;
-  else if (route.section === 'activity') screen = <ActivityPage />;
+  else if (route.section === 'activity') screen = <AuditPage />;
+  else if (route.section === 'team') screen = <TeamPage />;
   else if (route.section === 'connect') screen = <ConnectPage />;
   else screen = <SettingsPage />;
 
@@ -364,9 +371,18 @@ function Workspace({ onSignOut }: { onSignOut: () => void }) {
           </nav>
 
           <div className="side-foot">
+            {me && (
+              <a className="whoami" href={envId ? href(envId, 'team') : '#/'} title="Team and access">
+                <span className="avatar" aria-hidden="true">{me.name.trim().slice(0, 1).toUpperCase() || '?'}</span>
+                <span className="env-text">
+                  <span className="env-name">{me.name}</span>
+                  <span className="env-label">{me.role[0].toUpperCase() + me.role.slice(1)}</span>
+                </span>
+              </a>
+            )}
             <a href={REPO} target="_blank" rel="noreferrer"><Icon name="external" />Source and docs</a>
-            <button type="button" onClick={async () => { await navigator.clipboard.writeText(auth.key ?? '').then(() => toast('Workspace key copied'), () => toast('Could not copy the key', 'error')); }}>
-              <Icon name="key" />Copy workspace key
+            <button type="button" onClick={async () => { await navigator.clipboard.writeText(auth.key ?? '').then(() => toast('Access key copied'), () => toast('Could not copy the key', 'error')); }}>
+              <Icon name="key" />Copy my access key
             </button>
             <button type="button" onClick={() => setLeaving(true)}><Icon name="out" />Sign out</button>
           </div>

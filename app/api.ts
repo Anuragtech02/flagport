@@ -64,10 +64,29 @@ export type Environment = EnvSummary & {
   connections: { server: number; js: number; mobile: number };
 };
 
-export type Activity = { id: number; at: string; action: string; kind: 'flags' | 'segments'; key: string; summary: string; comment: string };
+export type Role = 'reader' | 'writer' | 'admin' | 'owner';
+export const ROLES: Role[] = ['reader', 'writer', 'admin', 'owner'];
+export type Me = { id: string; name: string; role: Role };
+export type Member = { id: string; name: string; role: Role; createdAt: string; lastUsedAt: string | null };
+export type AuditEntry = {
+  id: number;
+  at: string;
+  actor: { id: string; name: string };
+  envId: string | null;
+  envName: string | null;
+  action: string;
+  /** flags, segments, environment or member. */
+  kind: string;
+  key: string;
+  summary: string;
+  comment: string;
+  before: unknown;
+  after: unknown;
+};
+export type AuditFilter = { env?: string; kind?: string; key?: string; actor?: string; before?: number; limit?: number };
 
 export class ApiError extends Error {
-  constructor(message: string, readonly status: number) {
+  constructor(message: string, readonly status: number, readonly data?: unknown) {
     super(message);
   }
 }
@@ -117,11 +136,14 @@ async function request<T>(method: string, path: string, body?: unknown, useKey: 
   }
   if (res.status === 401 && useKey === key && key) onUnauthorized();
   const data = res.status === 204 ? null : await res.json().catch(() => null);
-  if (!res.ok) throw new ApiError((data as { error?: string } | null)?.error ?? `Request failed (${res.status})`, res.status);
+  if (!res.ok) throw new ApiError((data as { error?: string } | null)?.error ?? `Request failed (${res.status})`, res.status, data);
   return data as T;
 }
 
-const withComment = (comment?: string) => (comment ? '?comment=' + encodeURIComponent(comment) : '');
+const query = (values: Record<string, string | number | undefined>) => {
+  const filled = Object.entries(values).filter(([, value]) => value !== undefined && value !== '');
+  return filled.length ? '?' + filled.map(([name, value]) => `${name}=${encodeURIComponent(String(value))}`).join('&') : '';
+};
 const enc = encodeURIComponent;
 
 export const api = {
@@ -134,12 +156,25 @@ export const api = {
   env: (id: string) => request<Environment>('GET', `/envs/${enc(id)}`),
   renameEnv: (id: string, name: string) => request<EnvSummary>('PATCH', `/envs/${enc(id)}`, { name }),
   deleteEnv: (id: string) => request<null>('DELETE', `/envs/${enc(id)}`),
-  activity: (id: string) => request<Activity[]>('GET', `/envs/${enc(id)}/activity`),
-  saveFlag: (id: string, flagKey: string, flag: object, comment?: string) =>
-    request<Flag>('PUT', `/envs/${enc(id)}/flags/${enc(flagKey)}${withComment(comment)}`, flag),
+  me: () => request<Me>('GET', '/me'),
+  members: () => request<Member[]>('GET', '/members'),
+  addMember: (name: string, role: Role) => request<{ member: Member; key: string }>('POST', '/members', { name, role }),
+  updateMember: (id: string, change: { name?: string; role?: Role }) => request<Member>('PATCH', `/members/${enc(id)}`, change),
+  removeMember: (id: string) => request<null>('DELETE', `/members/${enc(id)}`),
+  rotateMemberKey: (id: string) => request<{ member: Member; key: string }>('POST', `/members/${enc(id)}/rotate`),
+  audit: (filter: AuditFilter = {}) => request<AuditEntry[]>('GET', `/audit${query(filter)}`),
+  /** The audit log as a CSV file. Fetched with the key, so it cannot be a plain link. */
+  async auditCsv(filter: AuditFilter = {}): Promise<Blob> {
+    const res = await fetch(`/api/audit${query({ ...filter, format: 'csv' })}`, { headers: { authorization: 'Bearer ' + key } });
+    if (!res.ok) throw new ApiError(`Export failed (${res.status})`, res.status);
+    return res.blob();
+  },
+  /** `ifVersion` is the version the edit started from; the server refuses the save if someone else saved since. */
+  saveFlag: (id: string, flagKey: string, flag: object, comment?: string, ifVersion?: number) =>
+    request<Flag>('PUT', `/envs/${enc(id)}/flags/${enc(flagKey)}${query({ comment, ifVersion })}`, flag),
   deleteFlag: (id: string, flagKey: string) => request<null>('DELETE', `/envs/${enc(id)}/flags/${enc(flagKey)}`),
-  saveSegment: (id: string, segmentKey: string, segment: object, comment?: string) =>
-    request<Segment>('PUT', `/envs/${enc(id)}/segments/${enc(segmentKey)}${withComment(comment)}`, segment),
+  saveSegment: (id: string, segmentKey: string, segment: object, comment?: string, ifVersion?: number) =>
+    request<Segment>('PUT', `/envs/${enc(id)}/segments/${enc(segmentKey)}${query({ comment, ifVersion })}`, segment),
   deleteSegment: (id: string, segmentKey: string) => request<null>('DELETE', `/envs/${enc(id)}/segments/${enc(segmentKey)}`),
   importFromLaunchDarkly: (id: string, input: { apiToken: string; projectKey: string; environmentKey: string }) =>
     request<{ imported: { flags: number; segments: number }; skipped: unknown[] }>('POST', `/envs/${enc(id)}/import`, input),

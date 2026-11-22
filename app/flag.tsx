@@ -1,11 +1,12 @@
 // One flag: the targeting editor, its variations, numbers, history and settings.
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { api, type Activity, type Clause, type Flag, type Rule, type Segment, type Serve, type Target } from './api';
+import { ApiError, api, type AuditEntry, type Clause, type Flag, type Rule, type Segment, type Serve, type Target } from './api';
+import { AuditList } from './audit';
 import {
   OPERATORS, ago, audience, compact, describeServe, flagChanges, flagProblems, flagType, formatPercent, individualTargets, lastDays, newClause, newId,
   operatorOf, serveProblem, show, splitTargets, toPercent, toWeight, variationColor, variationInUse,
 } from './model';
-import { go, href, setUnsaved, useApp, useEnv } from './state';
+import { go, href, setUnsaved, useApp, useCan, useEnv } from './state';
 import { Button, Chips, CopyButton, Empty, Field, Icon, Modal, ModalForm, Swatch, Tabs, Toggle, useToast } from './ui';
 import { VariationPill, parseVariation } from './flags';
 
@@ -395,36 +396,15 @@ function Insights({ flag }: { flag: Flag }) {
   );
 }
 
-export function ActivityList({ entries, envId, showKey }: { entries: Activity[]; envId: string; showKey: boolean }) {
-  return (
-    <ul className="activity">
-      {entries.map((entry) => (
-        <li key={entry.id}>
-          <span className={`activity-mark activity-${entry.action}`} aria-hidden="true" />
-          <div>
-            <p>
-              {showKey && entry.key && <a className="mono" href={href(envId, entry.kind, entry.key)}>{entry.key}</a>}
-              {showKey && entry.key ? ' ' : ''}
-              <span className={showKey && entry.key ? 'lower' : ''}>{entry.summary}</span>
-            </p>
-            {entry.comment && <p className="activity-comment">{entry.comment}</p>}
-          </div>
-          <time dateTime={entry.at} title={new Date(entry.at).toLocaleString()}>{ago(entry.at)}</time>
-        </li>
-      ))}
-    </ul>
-  );
-}
-
 function History({ flagKey }: { flagKey: string }) {
   const env = useEnv();
-  const [entries, setEntries] = useState<Activity[] | null>(null);
+  const [entries, setEntries] = useState<AuditEntry[] | null>(null);
   useEffect(() => {
-    api.activity(env.id).then((all) => setEntries(all.filter((entry) => entry.kind === 'flags' && entry.key === flagKey)), () => setEntries([]));
+    api.audit({ env: env.id, kind: 'flags', key: flagKey, limit: 200 }).then(setEntries, () => setEntries([]));
   }, [env.id, flagKey, env.flags[flagKey]?.version]);
   if (!entries) return <div className="loading" aria-label="Loading" />;
-  if (!entries.length) return <Empty title="No recorded changes">Changes made from now on are listed here, with the note you add when saving.</Empty>;
-  return <section className="panel"><ActivityList entries={entries} envId={env.id} showKey={false} /></section>;
+  if (!entries.length) return <Empty title="No recorded changes">Changes made from now on are listed here, with who made them and the note they added.</Empty>;
+  return <section className="panel"><AuditList entries={entries} showKey={false} /></section>;
 }
 
 // ---- The page ---------------------------------------------------------------------------------
@@ -432,7 +412,8 @@ function History({ flagKey }: { flagKey: string }) {
 type Tab = 'targeting' | 'variations' | 'insights' | 'history' | 'settings';
 
 export function FlagPage({ flagKey }: { flagKey: string }) {
-  const { reload } = useApp();
+  const { reload, me } = useApp();
+  const canWrite = useCan()('writer');
   const env = useEnv();
   const toast = useToast();
   const saved = env.flags[flagKey] as Flag | undefined;
@@ -477,7 +458,14 @@ export function FlagPage({ flagKey }: { flagKey: string }) {
   const reach = audience(draft);
   const save = async () => {
     const { version, updatedAt, deleted, key, ...body } = edited;
-    const result = await api.saveFlag(env.id, flagKey, body, comment.trim());
+    let result: Flag;
+    try {
+      result = await api.saveFlag(env.id, flagKey, body, comment.trim(), base.version);
+    } catch (e) {
+      // Someone else saved first: fetch their version so the warning above the editor appears.
+      if (e instanceof ApiError && e.status === 409) await reload();
+      throw e;
+    }
     adopt(result);
     setComment('');
     await reload();
@@ -549,7 +537,7 @@ export function FlagPage({ flagKey }: { flagKey: string }) {
               <strong>Delete this flag</strong>
               <p className="muted">SDKs fall back to the default value written in your code.</p>
             </div>
-            <Button kind="danger" onClick={() => setDeleting(true)}>Delete flag</Button>
+            <Button kind="danger" disabled={!canWrite} onClick={() => setDeleting(true)}>Delete flag</Button>
           </div>
         </section>
       )}
@@ -558,10 +546,10 @@ export function FlagPage({ flagKey }: { flagKey: string }) {
         <div className="savebar" role="region" aria-label="Unsaved changes">
           <div className="savebar-text">
             <strong>{changes.length} unsaved {changes.length === 1 ? 'change' : 'changes'}</strong>
-            <span className="muted">{problems[0] ?? changes[0]}</span>
+            <span className="muted">{canWrite ? problems[0] ?? changes[0] : `Your role is ${me.role}, which can look but not save.`}</span>
           </div>
           <Button onClick={() => adopt(base)}>Discard</Button>
-          <Button kind="primary" onClick={() => setReviewing(true)}>Review and save</Button>
+          <Button kind="primary" disabled={!canWrite} onClick={() => setReviewing(true)}>Review and save</Button>
         </div>
       )}
 

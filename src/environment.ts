@@ -65,10 +65,6 @@ export class EnvironmentDO extends DurableObject<unknown> {
         day TEXT NOT NULL, flag TEXT NOT NULL, variation TEXT NOT NULL, count INTEGER NOT NULL,
         PRIMARY KEY (day, flag, variation)
       );
-      CREATE TABLE IF NOT EXISTS audit (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, action TEXT NOT NULL,
-        kind TEXT NOT NULL, key TEXT NOT NULL, summary TEXT NOT NULL, comment TEXT NOT NULL DEFAULT ''
-      );
     `);
     // Environments created before mobile support get their key on first load.
     this.mobileKey = (await this.ctx.storage.get<string>('mobileKey')) ?? null;
@@ -194,26 +190,23 @@ export class EnvironmentDO extends DurableObject<unknown> {
     return { ...this.snapshot(), evals, series, connections, mobileKey: this.mobileKey };
   }
 
-  /** The most recent changes to this environment, newest first. */
-  activity() {
-    return this.sql
-      .exec('SELECT id, at, action, kind, key, summary, comment FROM audit ORDER BY id DESC LIMIT 200')
-      .toArray();
-  }
-
-  upsert(kind: Kind, key: string, input: Json, comment = '') {
+  /**
+   * Creates or replaces a flag or segment. With `expectVersion`, the write is
+   * refused when someone else saved in the meantime, so edits are not lost silently.
+   */
+  upsert(kind: Kind, key: string, input: Json, expectVersion?: number) {
     const before = this.current(kind, key);
+    if (expectVersion !== undefined && (before?.version ?? 0) !== expectVersion) return { conflict: true as const, current: before };
     const item = this.store(kind, key, input);
-    this.record(before ? 'updated' : 'created', kind, key, describeChange(kind, before, item), comment);
     this.changed('patch', { path: `/${kind}/${key}`, data: item });
-    return item;
+    return { conflict: false as const, item, before, summary: describeChange(kind, before, item) };
   }
 
-  remove(kind: Kind, key: string): boolean {
-    const version = this.current(kind, key) ? this.currentVersion(kind, key) : 0;
-    if (version === 0) return false;
-    this.record('deleted', kind, key, 'Deleted', '');
-    const next = version + 1;
+  /** Returns what was deleted, or null when there was nothing to delete. */
+  remove(kind: Kind, key: string): Json | null {
+    const before = this.current(kind, key);
+    if (!before) return null;
+    const next = this.currentVersion(kind, key) + 1;
     this.sql.exec(
       'UPDATE items SET version = ?, deleted = 1, data = ? WHERE kind = ? AND key = ?',
       next,
@@ -222,7 +215,7 @@ export class EnvironmentDO extends DurableObject<unknown> {
       key,
     );
     this.changed('delete', { path: `/${kind}/${key}`, version: next });
-    return true;
+    return before;
   }
 
   /** Deletes the environment for good: its keys stop working and every connected SDK is cut off. */
@@ -241,7 +234,6 @@ export class EnvironmentDO extends DurableObject<unknown> {
   importAll(flags: Json[], segments: Json[]) {
     for (const segment of segments) this.store('segments', String(segment.key), segment);
     for (const flag of flags) this.store('flags', String(flag.key), flag);
-    this.record('imported', 'flags', '', `Imported ${flags.length} flags and ${segments.length} segments from LaunchDarkly`, '');
     this.changed('put', { path: '/', data: this.snapshot() });
     return { flags: flags.length, segments: segments.length };
   }
@@ -257,19 +249,6 @@ export class EnvironmentDO extends DurableObject<unknown> {
   private current(kind: Kind, key: string): Json | null {
     const rows = this.sql.exec('SELECT data, deleted FROM items WHERE kind = ? AND key = ?', kind, key).toArray();
     return rows.length && !rows[0].deleted ? JSON.parse(rows[0].data as string) : null;
-  }
-
-  private record(action: string, kind: Kind, key: string, summary: string, comment: string) {
-    this.sql.exec(
-      'INSERT INTO audit (at, action, kind, key, summary, comment) VALUES (?, ?, ?, ?, ?, ?)',
-      new Date().toISOString(),
-      action,
-      kind,
-      key,
-      summary,
-      comment,
-    );
-    this.sql.exec('DELETE FROM audit WHERE id <= (SELECT MAX(id) FROM audit) - 1000');
   }
 
   private store(kind: Kind, key: string, input: Json): Json {

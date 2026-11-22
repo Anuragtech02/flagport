@@ -1,10 +1,10 @@
 // Routing and the data every screen shares.
 import { createContext, useContext, useEffect, useState } from 'react';
-import type { EnvSummary, Environment } from './api';
+import { ROLES, type EnvSummary, type Environment, type Me, type Role } from './api';
 
-export type Section = 'flags' | 'segments' | 'activity' | 'connect' | 'settings';
+export type Section = 'flags' | 'segments' | 'activity' | 'connect' | 'team' | 'settings';
 export type Route = { env: string | null; section: Section; key: string | null };
-const SECTIONS: Section[] = ['flags', 'segments', 'activity', 'connect', 'settings'];
+const SECTIONS: Section[] = ['flags', 'segments', 'activity', 'connect', 'team', 'settings'];
 
 // Addresses look like #/e/<environment id>/<section>/<flag or segment key>.
 export function parseRoute(hash: string): Route {
@@ -55,6 +55,8 @@ export type App = {
   /** The environment on screen, with its flags. Null while loading or when there is none. */
   env: Environment | null;
   route: Route;
+  /** Who is signed in. */
+  me: Me;
   /** Fetches the current environment again, after a change. */
   reload: () => Promise<void>;
   reloadEnvs: () => Promise<EnvSummary[]>;
@@ -63,5 +65,17 @@ export type App = {
 
 export const AppContext = createContext<App | null>(null);
 export const useApp = () => useContext(AppContext)!;
+/** True when the signed-in member's role is at least `needed`. */
+export const useCan = () => {
+  const { me } = useApp();
+  return (needed: Role) => ROLES.indexOf(me.role) >= ROLES.indexOf(needed);
+};
+export const ROLE_NOTES: Record<Role, string> = {
+  reader: 'Can see everything, change nothing',
+  writer: 'Can change flags and segments',
+  admin: 'Can also manage environments and members',
+  owner: 'Can do everything, including managing owners',
+};
+
 /** For screens that only render once an environment is loaded. */
 export const useEnv = () => useApp().env!;

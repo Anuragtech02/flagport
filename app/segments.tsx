@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { api, type Flag, type Segment } from './api';
 import { ago, describeClause, newClause, newId, segmentChanges, clauseProblem } from './model';
-import { go, href, setUnsaved, useApp, useEnv } from './state';
+import { go, href, setUnsaved, useApp, useCan, useEnv } from './state';
 import { Button, Chips, CopyButton, Empty, Field, Icon, Modal, ModalForm, useToast } from './ui';
 import { ClauseEditor } from './flag';
 
@@ -91,6 +91,7 @@ export function SegmentList() {
 
 export function SegmentPage({ segmentKey }: { segmentKey: string }) {
   const { reload } = useApp();
+  const canWrite = useCan()('writer');
   const env = useEnv();
   const toast = useToast();
   const saved = env.segments[segmentKey] as Segment | undefined;
@@ -128,7 +129,7 @@ export function SegmentPage({ segmentKey }: { segmentKey: string }) {
     setBusy(true);
     try {
       const { version, updatedAt, deleted, key, ...body } = draft;
-      const result = await api.saveSegment(env.id, segmentKey, body);
+      const result = await api.saveSegment(env.id, segmentKey, body, undefined, base.version);
       setBase(result);
       setDraft(result);
       await reload();
@@ -210,7 +211,7 @@ export function SegmentPage({ segmentKey }: { segmentKey: string }) {
             <span className="muted">{problems[0] ?? changes.join(', ')}</span>
           </div>
           <Button onClick={() => setDraft(base)}>Discard</Button>
-          <Button kind="primary" disabled={busy || problems.length > 0} onClick={save}>{busy ? 'Saving…' : 'Save segment'}</Button>
+          <Button kind="primary" disabled={busy || problems.length > 0 || !canWrite} title={canWrite ? undefined : 'Saving needs the writer role'} onClick={save}>{busy ? 'Saving…' : 'Save segment'}</Button>
         </div>
       )}
 
