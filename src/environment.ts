@@ -14,6 +14,22 @@ const HEARTBEAT_MS = 25_000;
 const randomHex = (bytes: number) =>
   [...crypto.getRandomValues(new Uint8Array(bytes))].map((b) => b.toString(16).padStart(2, '0')).join('');
 
+const TARGETING = ['variations', 'offVariation', 'fallthrough', 'prerequisites', 'targets', 'contextTargets', 'rules'];
+
+/** One line for the activity log: what a save actually changed. */
+function describeChange(kind: Kind, before: Json | null, after: Json): string {
+  if (!before) return 'Created';
+  const differs = (fields: string[]) => fields.some((field) => JSON.stringify(before[field]) !== JSON.stringify(after[field]));
+  const ignored = ['on', 'version', 'updatedAt', ...(kind === 'flags' ? TARGETING : [])];
+  const other = differs(Object.keys({ ...before, ...after }).filter((field) => !ignored.includes(field)));
+  if (kind === 'segments') return other ? 'Changed who is in it or its details' : 'Saved with no changes';
+  const parts: string[] = [];
+  if (before.on !== after.on) parts.push(after.on ? 'Turned on' : 'Turned off');
+  if (differs(TARGETING)) parts.push(parts.length ? 'changed targeting' : 'Changed targeting');
+  if (other) parts.push(parts.length ? 'changed settings' : 'Changed settings');
+  return parts.join(', ') || 'Saved with no changes';
+}
+
 /**
  * One instance per environment. Holds that environment's flags and segments,
  * keeps the open SDK streams, and pushes every change to them.
@@ -48,6 +64,10 @@ export class EnvironmentDO extends DurableObject<unknown> {
       CREATE TABLE IF NOT EXISTS evals (
         day TEXT NOT NULL, flag TEXT NOT NULL, variation TEXT NOT NULL, count INTEGER NOT NULL,
         PRIMARY KEY (day, flag, variation)
+      );
+      CREATE TABLE IF NOT EXISTS audit (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, action TEXT NOT NULL,
+        kind TEXT NOT NULL, key TEXT NOT NULL, summary TEXT NOT NULL, comment TEXT NOT NULL DEFAULT ''
       );
     `);
     // Environments created before mobile support get their key on first load.
@@ -163,20 +183,36 @@ export class EnvironmentDO extends DurableObject<unknown> {
     )) {
       (evals[row.flag as string] ??= {})[row.variation as string] = row.total as number;
     }
+    // Day by day for the last two weeks, for the charts: flag -> day -> variation -> count.
+    const series: Record<string, Record<string, Record<string, number>>> = {};
+    const from = new Date(Date.now() - 13 * 86_400_000).toISOString().slice(0, 10);
+    for (const row of this.sql.exec('SELECT day, flag, variation, count FROM evals WHERE day >= ?', from)) {
+      ((series[row.flag as string] ??= {})[row.day as string] ??= {})[row.variation as string] = row.count as number;
+    }
     const connections = { server: 0, js: 0, mobile: 0 };
     for (const subscriber of this.subscribers.values()) connections[subscriber.audience]++;
-    return { ...this.snapshot(), evals, connections, mobileKey: this.mobileKey };
+    return { ...this.snapshot(), evals, series, connections, mobileKey: this.mobileKey };
   }
 
-  upsert(kind: Kind, key: string, input: Json) {
+  /** The most recent changes to this environment, newest first. */
+  activity() {
+    return this.sql
+      .exec('SELECT id, at, action, kind, key, summary, comment FROM audit ORDER BY id DESC LIMIT 200')
+      .toArray();
+  }
+
+  upsert(kind: Kind, key: string, input: Json, comment = '') {
+    const before = this.current(kind, key);
     const item = this.store(kind, key, input);
+    this.record(before ? 'updated' : 'created', kind, key, describeChange(kind, before, item), comment);
     this.changed('patch', { path: `/${kind}/${key}`, data: item });
     return item;
   }
 
   remove(kind: Kind, key: string): boolean {
-    const version = this.currentVersion(kind, key);
+    const version = this.current(kind, key) ? this.currentVersion(kind, key) : 0;
     if (version === 0) return false;
+    this.record('deleted', kind, key, 'Deleted', '');
     const next = version + 1;
     this.sql.exec(
       'UPDATE items SET version = ?, deleted = 1, data = ? WHERE kind = ? AND key = ?',
@@ -205,6 +241,7 @@ export class EnvironmentDO extends DurableObject<unknown> {
   importAll(flags: Json[], segments: Json[]) {
     for (const segment of segments) this.store('segments', String(segment.key), segment);
     for (const flag of flags) this.store('flags', String(flag.key), flag);
+    this.record('imported', 'flags', '', `Imported ${flags.length} flags and ${segments.length} segments from LaunchDarkly`, '');
     this.changed('put', { path: '/', data: this.snapshot() });
     return { flags: flags.length, segments: segments.length };
   }
@@ -216,12 +253,31 @@ export class EnvironmentDO extends DurableObject<unknown> {
     return rows.length ? (rows[0].version as number) : 0;
   }
 
+  /** The stored item, or null when it does not exist or was deleted. */
+  private current(kind: Kind, key: string): Json | null {
+    const rows = this.sql.exec('SELECT data, deleted FROM items WHERE kind = ? AND key = ?', kind, key).toArray();
+    return rows.length && !rows[0].deleted ? JSON.parse(rows[0].data as string) : null;
+  }
+
+  private record(action: string, kind: Kind, key: string, summary: string, comment: string) {
+    this.sql.exec(
+      'INSERT INTO audit (at, action, kind, key, summary, comment) VALUES (?, ?, ?, ?, ?, ?)',
+      new Date().toISOString(),
+      action,
+      kind,
+      key,
+      summary,
+      comment,
+    );
+    this.sql.exec('DELETE FROM audit WHERE id <= (SELECT MAX(id) FROM audit) - 1000');
+  }
+
   private store(kind: Kind, key: string, input: Json): Json {
     // Versions only ever go up, including across delete and re-create, because
     // SDKs ignore any update that is not newer than what they hold.
     const version = this.currentVersion(kind, key) + 1;
     const normalized = kind === 'flags' ? normalizeFlag(key, input) : normalizeSegment(key, input);
-    const item = { ...normalized, version };
+    const item = { ...normalized, version, updatedAt: Date.now() };
     this.sql.exec(
       'INSERT OR REPLACE INTO items (kind, key, version, data, deleted) VALUES (?, ?, ?, ?, 0)',
       kind,

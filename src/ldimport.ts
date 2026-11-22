@@ -57,6 +57,9 @@ export function convertFlag(flag: Any, envKey: string): Json | null {
 
   return {
     key: flag.key,
+    name: flag.name,
+    description: flag.description,
+    tags: flag.tags ?? [],
     on: env.on === true,
     salt: env.salt,
     variations: (flag.variations ?? []).map((v: Any) => v.value),
@@ -84,6 +87,8 @@ export function convertSegment(segment: Any): Json | null {
     (list ?? []).map((t: Any) => ({ contextKind: t.contextKind, values: t.values ?? [] }));
   return {
     key: segment.key,
+    name: segment.name,
+    description: segment.description,
     salt: segment.salt,
     included: segment.included ?? [],
     excluded: segment.excluded ?? [],

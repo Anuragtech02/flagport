@@ -90,8 +90,8 @@ To open sign-ups, run `npx wrangler secret put SIGNUPS` and enter `open`.
   LaunchDarkly's own open-source evaluator.
 - `src/ldimport.ts`: converts flags and segments read from the LaunchDarkly
   REST API.
-- `public/app/`: the dashboard. `public/index.html` and `site/`: the landing
-  page.
+- `app/`: the dashboard, a React app bundled into `public/app/` by
+  `npm run build`. `public/index.html` and `site/`: the landing page.
 
 Flags are stored in LaunchDarkly's own format, so nothing is translated on
 the way in or out.
@@ -109,8 +109,10 @@ workspace's environments.
 | `GET /api/envs` | Lists environments |
 | `POST /api/envs` | Creates an environment: `{ "name": "Production" }` |
 | `GET /api/envs/:id` | Keys, flags, segments, connected SDKs and evaluation counts |
+| `PATCH /api/envs/:id` | Renames the environment: `{ "name": "Staging" }` |
+| `GET /api/envs/:id/activity` | The last 200 changes to flags and segments |
 | `DELETE /api/envs/:id` | Deletes the environment and turns its keys off |
-| `PUT /api/envs/:id/flags/:key` | Creates or replaces a flag |
+| `PUT /api/envs/:id/flags/:key` | Creates or replaces a flag. `?comment=` adds a note to the activity log |
 | `DELETE /api/envs/:id/flags/:key` | Deletes a flag |
 | `PUT` and `DELETE /api/envs/:id/segments/:key` | The same, for segments |
 | `POST /api/envs/:id/import` | Imports from LaunchDarkly: `{ apiToken, projectKey, environmentKey }` |
@@ -142,7 +144,7 @@ workspace test needs sign-ups open.
 - One key per workspace: there are no team members or roles.
 - A workspace can hold 10 environments. The instance owner is not limited.
 - Sign-ups are rate limited per network, and that is the only abuse control.
-- There is no audit log.
+- The activity log records what changed and when, not who: a workspace has one key.
 
 ## Licence
 

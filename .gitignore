@@ -3,4 +3,5 @@ node_modules
 .dev.vars
 .env
 public/scene.js
+public/app/app.js
 test/browser/vendor

@@ -105,6 +105,10 @@ export class RegistryDO extends DurableObject<unknown> {
     return record;
   }
 
+  rename(id: string, name: string) {
+    this.ctx.storage.sql.exec('UPDATE envs SET name = ? WHERE id = ?', name, id);
+  }
+
   remove(id: string) {
     this.ctx.storage.sql.exec('DELETE FROM envs WHERE id = ?', id);
   }

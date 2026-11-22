@@ -101,6 +101,16 @@ async function handleAdmin(request: Request, env: Env, path: string): Promise<Re
     return new Response(null, { status: 204 });
   }
 
+  if (parts.length === 2 && method === 'PATCH') {
+    const body = (await readJson(request)) as Json | null;
+    const name = typeof body?.name === 'string' ? body.name.trim().slice(0, 80) : '';
+    if (!name) return error('Environment name is required', 400);
+    await registry(env).rename(record.id, name);
+    return json({ ...record, name });
+  }
+
+  if (parts.length === 3 && parts[2] === 'activity' && method === 'GET') return json(await stub.activity());
+
   if (parts.length === 2 && method === 'GET') return json({ ...record, clientSideId: record.id, ...((await stub.overview()) as object) });
 
   if (parts.length === 3 && parts[2] === 'import' && method === 'POST') {
@@ -124,7 +134,9 @@ async function handleAdmin(request: Request, env: Env, path: string): Promise<Re
     if (method === 'PUT') {
       const body = await readJson(request);
       if (!body || Array.isArray(body)) return error('Body must be a JSON object', 400);
-      return json(await stub.upsert(kind, key, body));
+      // An optional note from whoever made the change, kept in the activity log.
+      const comment = (new URL(request.url).searchParams.get('comment') ?? '').trim().slice(0, 280);
+      return json(await stub.upsert(kind, key, body, comment));
     }
     if (method === 'DELETE') {
       return (await stub.remove(kind, key)) ? new Response(null, { status: 204 }) : error('Not found', 404);
