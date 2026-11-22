@@ -1,0 +1,31 @@
+{
+  "name": "flagport",
+  "description": "An open-source server that speaks the LaunchDarkly SDK protocol, on Cloudflare Workers.",
+  "license": "MIT",
+  "repository": "github:Anuragtech02/flagport",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "npm run build:site && wrangler dev --port 48788",
+    "deploy": "npm run build:site && wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test test/import.test.mjs",
+    "test:e2e": "node test/e2e.mjs && node test/e2e-client.mjs && node test/e2e-workspaces.mjs",
+    "test:browser": "mkdir -p test/browser/vendor && cp node_modules/launchdarkly-js-client-sdk/dist/ldclient.min.js test/browser/vendor/ldclient-v3.min.js && cp node_modules/@launchdarkly/js-client-sdk/dist/index.js test/browser/vendor/ldclient-v4.js && python3 -m http.server 48790 --bind 127.0.0.1 --directory test/browser",
+    "build:site": "esbuild site/scene.js --bundle --minify --format=esm --target=es2020 --outfile=public/scene.js"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261121.1",
+    "@launchdarkly/js-client-sdk": "^4.14.4",
+    "@launchdarkly/node-server-sdk": "^9.17.1",
+    "esbuild": "^0.28.2",
+    "launchdarkly-js-client-sdk": "^3.9.7",
+    "launchdarkly-node-client-sdk": "^3.4.5",
+    "three": "^0.187.0",
+    "typescript": "^7.0.2",
+    "wrangler": "^4.166.0"
+  },
+  "dependencies": {
+    "@launchdarkly/cloudflare-server-sdk": "^2.7.56"
+  }
+}

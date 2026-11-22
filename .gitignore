@@ -1,0 +1,6 @@
+node_modules
+.wrangler
+.dev.vars
+.env
+public/scene.js
+test/browser/vendor

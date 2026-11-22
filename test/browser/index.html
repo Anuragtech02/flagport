@@ -1,0 +1,46 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Flagport browser SDK check</title>
+<!--
+  Runs LaunchDarkly's real browser SDKs (v3 and v4) against Flagport from a
+  different origin, which also exercises CORS. Run `npm run test:browser`, then
+  open http://localhost:48790/?id=<client-side ID>&base=<Flagport URL>.
+-->
+<body style="font: 14px ui-monospace, monospace; padding: 20px">
+<pre id="out"></pre>
+<script src="./vendor/ldclient-v3.min.js"></script>
+<script type="module">
+  const query = new URLSearchParams(location.search);
+  const id = query.get('id');
+  const base = query.get('base') ?? 'http://localhost:48788';
+  const log = (line) => (document.querySelector('#out').textContent += line + '\n');
+  const context = { kind: 'user', key: 'browser-1', email: 'me@beta.test' };
+  log(`page origin ${location.origin} -> Flagport ${base}`);
+
+  try {
+    const v3 = LDClient.initialize(id, context, { baseUrl: base, streamUrl: base, eventsUrl: base, streaming: true });
+    await v3.waitForInitialization(5);
+    log('v3 initialised: banner = ' + v3.variation('banner', 'default') + ', server-secret = ' + v3.variation('server-secret', 'hidden'));
+    v3.on('change:banner', (now) => log('v3 live change: banner = ' + now));
+    v3.variation('half', 'none');
+    await v3.flush();
+    log('v3 events flushed');
+  } catch (e) {
+    log('v3 FAILED: ' + e.message);
+  }
+
+  try {
+    const { createClient } = await import('./vendor/ldclient-v4.js');
+    const v4 = createClient(id, context, { baseUri: base, streamUri: base, eventsUri: base, streaming: true });
+    v4.start();
+    await v4.waitForInitialization({ timeout: 5 });
+    log('v4 initialised: banner = ' + v4.variation('banner', 'default') + ', server-secret = ' + v4.variation('server-secret', 'hidden'));
+    v4.on('change', () => log('v4 live change: banner = ' + v4.variation('banner', 'default')));
+    await v4.flush();
+    log('v4 events flushed');
+  } catch (e) {
+    log('v4 FAILED: ' + e.message);
+  }
+  log('ready');
+</script>
+</body>

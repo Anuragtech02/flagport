@@ -1,0 +1,17 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "flagport",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-01",
+  // Needed by LaunchDarkly's evaluator package (node:events).
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": { "directory": "./public" },
+  "durable_objects": {
+    "bindings": [
+      { "name": "ENV_DO", "class_name": "EnvironmentDO" },
+      { "name": "REGISTRY", "class_name": "RegistryDO" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["EnvironmentDO", "RegistryDO"] }],
+  "observability": { "enabled": true }
+}
