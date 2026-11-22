@@ -1,4 +1,4 @@
-import { EnvironmentDO, type Kind } from './environment';
+import { EnvironmentDO, type Change, type EnvSettings, type Kind } from './environment';
 import { OWNER, ROLES, RegistryDO, type Actor, type AuditInput, type Role } from './registry';
 import { validKey, type Json } from './flag';
 import { fetchFromLaunchDarkly } from './ldimport';
@@ -221,6 +221,61 @@ async function handleAdmin(request: Request, env: Env, path: string): Promise<Re
     return json({ ...record, name });
   }
 
+  const person = { id: actor.id, name: actor.name };
+  type ChangeResult = { change?: Change; error?: string; status?: number };
+  const answer = (result: ChangeResult, created = false) => (result.error ? error(result.error, result.status ?? 400) : json(result.change, created ? 201 : 200));
+
+  if (parts.length === 3 && parts[2] === 'settings' && method === 'PATCH') {
+    if (!can(actor, 'admin')) return forbidden('admin');
+    const body = (await readJson(request)) as Json | null;
+    if (typeof body?.approvals !== 'boolean') return error('approvals must be true or false', 400);
+    const settings = (await stub.updateSettings({ approvals: body.approvals })) as EnvSettings;
+    await log({ ...here, action: 'updated', kind: 'environment', key: record.id, summary: `${body.approvals ? 'Turned on' : 'Turned off'} required approval in ${record.name}` });
+    return json(settings);
+  }
+
+  if (parts[2] === 'changes') {
+    if (parts.length === 3 && method === 'GET') return json((await stub.changes()) as unknown as Change[]);
+    if (!can(actor, 'writer')) return forbidden('writer');
+
+    if (parts.length === 3 && method === 'POST') {
+      const body = (await readJson(request)) as Json | null;
+      const flag = typeof body?.flag === 'string' ? body.flag : '';
+      const title = typeof body?.title === 'string' ? body.title.trim().slice(0, 200) : '';
+      const proposed = body?.proposed;
+      if (!validKey(flag) || !title || !proposed || typeof proposed !== 'object' || Array.isArray(proposed)) {
+        return error('flag, title and proposed (the full flag as it should become) are required', 400);
+      }
+      let applyAt: string | null = null;
+      if (body?.applyAt) {
+        const time = Date.parse(String(body.applyAt));
+        if (Number.isNaN(time)) return error('applyAt is not a date', 400);
+        if (time < Date.now() - 60_000) return error('The scheduled time is in the past', 400);
+        if (time > Date.now() + 366 * 86_400_000) return error('Changes can be scheduled up to a year ahead', 400);
+        applyAt = new Date(time).toISOString();
+      }
+      if (body?.review !== true && !applyAt && !((await stub.getSettings()) as EnvSettings).approvals) {
+        return error('Nothing to wait for: save the flag directly, or ask for a review or set a time', 400);
+      }
+      const result = (await stub.createChange({ workspace: actor.workspace, envName: record.name, flag, title, proposed: proposed as Json, author: person, review: body?.review === true, applyAt })) as unknown as ChangeResult;
+      return answer(result, true);
+    }
+
+    const id = Number(parts[3]);
+    if (parts.length === 5 && Number.isInteger(id) && method === 'POST') {
+      if (parts[4] === 'review') {
+        const body = (await readJson(request)) as Json | null;
+        const decision = body?.decision === 'approve' ? 'approved' : body?.decision === 'reject' ? 'rejected' : null;
+        if (!decision) return error('decision must be approve or reject', 400);
+        const comment = typeof body?.comment === 'string' ? body.comment.trim().slice(0, 500) : '';
+        return answer((await stub.reviewChange(id, person, decision, comment)) as unknown as ChangeResult);
+      }
+      if (parts[4] === 'apply') return answer((await stub.applyChange(id, person)) as unknown as ChangeResult);
+      if (parts[4] === 'cancel') return answer((await stub.cancelChange(id, person, can(actor, 'admin'))) as unknown as ChangeResult);
+    }
+    return error('Not found', 404);
+  }
+
   // Kept for older dashboards: the audit log, limited to this environment.
   if (parts.length === 3 && parts[2] === 'activity' && method === 'GET') return json((await reg.audit(actor.workspace, { env: record.id, limit: 200 })) as unknown as AuditRow[]);
 
@@ -247,6 +302,15 @@ async function handleAdmin(request: Request, env: Env, path: string): Promise<Re
     const kind = parts[2] as Kind;
     const key = parts[3];
     if (!validKey(key)) return error('Keys may use letters, numbers, dot, dash and underscore', 400);
+    // Where approval is required, flags change through a change request. An admin may skip it, and that is recorded.
+    const approvals = kind === 'flags' && ((await stub.getSettings()) as EnvSettings).approvals;
+    const bypass = approvals && url.searchParams.get('bypass') === 'true';
+    if (approvals && (method === 'PUT' || method === 'DELETE')) {
+      const creating = method === 'PUT' && !((await stub.overview()) as unknown as { flags: Json }).flags[key];
+      if (!creating && !(bypass && can(actor, 'admin'))) {
+        return json({ error: `${record.name} requires approval. Propose this as a change, or ask an admin.`, approvalRequired: true }, 409);
+      }
+    }
     if (method === 'PUT') {
       if (!can(actor, 'writer')) return forbidden('writer');
       const body = await readJson(request);
@@ -257,14 +321,14 @@ async function handleAdmin(request: Request, env: Env, path: string): Promise<Re
       const expected = url.searchParams.get('ifVersion');
       const result = (await stub.upsert(kind, key, body, expected === null ? undefined : Number(expected))) as unknown as UpsertResult;
       if (result.conflict) return json({ error: 'This was changed by someone else since you opened it. Reload to see their change.', current: result.current }, 409);
-      await log({ ...here, action: result.before ? 'updated' : 'created', kind, key, summary: result.summary, comment, before: result.before, after: result.item });
+      await log({ ...here, action: result.before ? 'updated' : 'created', kind, key, summary: result.summary + (bypass ? ' (without approval)' : ''), comment, before: result.before, after: result.item });
       return json(result.item);
     }
     if (method === 'DELETE') {
       if (!can(actor, 'writer')) return forbidden('writer');
       const before = (await stub.remove(kind, key)) as unknown as Json | null;
       if (!before) return error('Not found', 404);
-      await log({ ...here, action: 'deleted', kind, key, summary: 'Deleted', before });
+      await log({ ...here, action: 'deleted', kind, key, summary: bypass ? 'Deleted (without approval)' : 'Deleted', before });
       return new Response(null, { status: 204 });
     }
   }

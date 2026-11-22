@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react';
 import { api, auth } from './api';
 import { go, href, useApp, useCan, useEnv } from './state';
-import { Button, CopyButton, Field, Modal, ModalForm, useToast } from './ui';
+import { Button, CopyButton, Field, Modal, ModalForm, Toggle, useToast } from './ui';
 
 // ---- Connect SDKs ------------------------------------------------------------------
 
@@ -106,6 +106,30 @@ export function SettingsPage() {
           <input aria-label="Environment name" maxLength={80} value={name} onChange={(event) => setName(event.target.value)} />
           <Button type="submit" disabled={!can('admin') || !name.trim() || name.trim() === env.name} title={can('admin') ? undefined : 'Renaming needs the admin role'}>Rename</Button>
         </form>
+      </section>
+
+      <section className="setting">
+        <h2>Approvals</h2>
+        <label className="setting-row">
+          <Toggle
+            on={env.settings.approvals}
+            disabled={!can('admin')}
+            label={`Require approval for flag changes in ${env.name}`}
+            onChange={async (on) => {
+              try {
+                await api.updateSettings(env.id, { approvals: on });
+                await reload();
+                toast(on ? `${env.name} now requires approval` : `${env.name} no longer requires approval`);
+              } catch (e) {
+                toast((e as Error).message, 'error');
+              }
+            }}
+          />
+          <span>
+            <strong>Require approval for flag changes in {env.name}</strong>
+            <span className="muted">Every edit to an existing flag is proposed as a change, and a second member has to approve it. Admins can skip approval in an emergency; the audit log records it. Needs at least two members who can write.</span>
+          </span>
+        </label>
       </section>
 
       <section className="setting">

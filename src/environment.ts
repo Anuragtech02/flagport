@@ -1,6 +1,53 @@
 import { DurableObject } from 'cloudflare:workers';
 import { normalizeFlag, normalizeSegment, type Json } from './flag';
 import { ClientEvaluator, type Audience, type Snapshot } from './evaluate';
+import type { AuditInput, RegistryDO } from './registry';
+
+/** The environment reaches the registry to write audit entries, including for changes it applies on a timer. */
+type Bindings = { REGISTRY: DurableObjectNamespace<RegistryDO> };
+
+export type Person = { id: string; name: string };
+export type Review = { by: Person; decision: 'approved' | 'rejected'; comment: string; at: string };
+export type ChangeStatus = 'pending' | 'approved' | 'applied' | 'rejected' | 'cancelled' | 'failed';
+/** A proposed edit to one flag. It may need approval, wait for a set time, or both. */
+export type Change = {
+  id: number;
+  flag: string;
+  title: string;
+  base: Json;
+  proposed: Json;
+  author: Person;
+  createdAt: string;
+  status: ChangeStatus;
+  needsApproval: boolean;
+  applyAt: string | null;
+  reviews: Review[];
+  closedAt: string | null;
+  closedBy: string | null;
+  failure: string | null;
+};
+export type EnvSettings = { approvals: boolean };
+
+/** Fields that record bookkeeping, not anyone's intent. */
+const BOOKKEEPING = ['version', 'updatedAt', 'deleted', 'key'];
+const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+
+/**
+ * Applies a proposal to the flag as it is now. Only the fields the proposal
+ * actually changed are written, so an unrelated edit made in the meantime
+ * survives. If someone else changed one of the same fields, it is a conflict.
+ */
+export function mergeProposal(base: Json, proposed: Json, current: Json): { merged: Json } | { conflicts: string[] } {
+  const fields = [...new Set([...Object.keys(base), ...Object.keys(proposed)])].filter((field) => !BOOKKEEPING.includes(field) && !same(base[field], proposed[field]));
+  const conflicts = fields.filter((field) => !same(current[field], base[field]) && !same(current[field], proposed[field]));
+  if (conflicts.length) return { conflicts };
+  const merged: Json = { ...current };
+  for (const field of fields) {
+    if (field in proposed) merged[field] = proposed[field];
+    else delete merged[field];
+  }
+  return { merged };
+}
 
 export type Kind = 'flags' | 'segments';
 export type AnyAudience = 'server' | Audience;
@@ -34,14 +81,16 @@ function describeChange(kind: Kind, before: Json | null, after: Json): string {
  * One instance per environment. Holds that environment's flags and segments,
  * keeps the open SDK streams, and pushes every change to them.
  */
-export class EnvironmentDO extends DurableObject<unknown> {
+export class EnvironmentDO extends DurableObject<Bindings> {
   private sdkKey: string | null = null;
   private mobileKey: string | null = null;
   private subscribers = new Map<Writer, Subscriber>();
   private heartbeat: ReturnType<typeof setInterval> | null = null;
   private evaluator = new ClientEvaluator(() => this.snapshot());
 
-  constructor(ctx: DurableObjectState, env: unknown) {
+  private settings: EnvSettings = { approvals: false };
+
+  constructor(ctx: DurableObjectState, env: Bindings) {
     super(ctx, env);
     ctx.blockConcurrencyWhile(async () => {
       this.sdkKey = (await ctx.storage.get<string>('sdkKey')) ?? null;
@@ -67,6 +116,16 @@ export class EnvironmentDO extends DurableObject<unknown> {
       );
     `);
     // Environments created before mobile support get their key on first load.
+    this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS changes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, flag TEXT NOT NULL, title TEXT NOT NULL,
+        base TEXT NOT NULL, proposed TEXT NOT NULL, author_id TEXT NOT NULL, author_name TEXT NOT NULL,
+        created_at TEXT NOT NULL, status TEXT NOT NULL, needs_approval INTEGER NOT NULL, apply_at TEXT,
+        reviews TEXT NOT NULL DEFAULT '[]', closed_at TEXT, closed_by TEXT, failure TEXT,
+        workspace TEXT NOT NULL, env_name TEXT NOT NULL
+      );
+    `);
+    this.settings = (await this.ctx.storage.get<EnvSettings>('settings')) ?? { approvals: false };
     this.mobileKey = (await this.ctx.storage.get<string>('mobileKey')) ?? null;
     if (!this.mobileKey && this.sdkKey) {
       this.mobileKey = `mob-${this.sdkKey.split('-')[1]}-${randomHex(16)}`;
@@ -187,7 +246,8 @@ export class EnvironmentDO extends DurableObject<unknown> {
     }
     const connections = { server: 0, js: 0, mobile: 0 };
     for (const subscriber of this.subscribers.values()) connections[subscriber.audience]++;
-    return { ...this.snapshot(), evals, series, connections, mobileKey: this.mobileKey };
+    const openChanges = this.sql.exec(`SELECT COUNT(*) AS n FROM changes WHERE status IN ('pending', 'approved')`).one().n as number;
+    return { ...this.snapshot(), evals, series, connections, mobileKey: this.mobileKey, settings: this.settings, openChanges };
   }
 
   /**
@@ -227,6 +287,7 @@ export class EnvironmentDO extends DurableObject<unknown> {
     this.sdkKey = null;
     this.mobileKey = null;
     this.evaluator.invalidate();
+    await this.ctx.storage.deleteAlarm();
     await this.ctx.storage.deleteAll();
   }
 
@@ -236,6 +297,170 @@ export class EnvironmentDO extends DurableObject<unknown> {
     for (const flag of flags) this.store('flags', String(flag.key), flag);
     this.changed('put', { path: '/', data: this.snapshot() });
     return { flags: flags.length, segments: segments.length };
+  }
+
+  // ---- Approvals and scheduled changes -----------------------------------
+
+  getSettings(): EnvSettings {
+    return this.settings;
+  }
+
+  async updateSettings(change: Partial<EnvSettings>): Promise<EnvSettings> {
+    this.settings = { ...this.settings, ...change };
+    await this.ctx.storage.put('settings', this.settings);
+    return this.settings;
+  }
+
+  private toChange(row: Record<string, unknown>): Change {
+    return {
+      id: row.id as number,
+      flag: row.flag as string,
+      title: row.title as string,
+      base: JSON.parse(row.base as string),
+      proposed: JSON.parse(row.proposed as string),
+      author: { id: row.author_id as string, name: row.author_name as string },
+      createdAt: row.created_at as string,
+      status: row.status as ChangeStatus,
+      needsApproval: row.needs_approval === 1,
+      applyAt: (row.apply_at as string) ?? null,
+      reviews: JSON.parse(row.reviews as string),
+      closedAt: (row.closed_at as string) ?? null,
+      closedBy: (row.closed_by as string) ?? null,
+      failure: (row.failure as string) ?? null,
+    };
+  }
+
+  private change(id: number): (Change & { workspace: string; envName: string }) | null {
+    const rows = this.sql.exec('SELECT * FROM changes WHERE id = ?', id).toArray();
+    return rows.length ? { ...this.toChange(rows[0]), workspace: rows[0].workspace as string, envName: rows[0].env_name as string } : null;
+  }
+
+  /** Open changes first, then the most recently closed. */
+  changes(): Change[] {
+    return this.sql
+      .exec(`SELECT * FROM changes ORDER BY CASE WHEN status IN ('pending', 'approved') THEN 0 ELSE 1 END, id DESC LIMIT 200`)
+      .toArray()
+      .map((row) => this.toChange(row));
+  }
+
+  private async audit(change: { workspace: string; envName: string; flag: string }, actor: Person, entry: Pick<AuditInput, 'action' | 'kind' | 'summary'> & Partial<AuditInput>) {
+    const registry = this.env.REGISTRY.get(this.env.REGISTRY.idFromName('registry')) as unknown as { record(entry: AuditInput): Promise<void> };
+    await registry.record({ workspace: change.workspace, actor, envId: this.sdkKey?.split('-')[1], envName: change.envName, key: change.flag, ...entry });
+  }
+
+  private close(id: number, status: ChangeStatus, by: string, failure: string | null = null) {
+    this.sql.exec('UPDATE changes SET status = ?, closed_at = ?, closed_by = ?, failure = ? WHERE id = ?', status, new Date().toISOString(), by, failure, id);
+  }
+
+  /** Wakes the environment when the next scheduled change is due. */
+  private async scheduleNext() {
+    const rows = this.sql.exec(`SELECT MIN(apply_at) AS next FROM changes WHERE status = 'approved' AND apply_at IS NOT NULL`).toArray();
+    const next = rows[0]?.next as string | null;
+    if (next) await this.ctx.storage.setAlarm(Math.max(Date.parse(next), Date.now() + 1000));
+    else await this.ctx.storage.deleteAlarm();
+  }
+
+  async createChange(input: { workspace: string; envName: string; flag: string; title: string; proposed: Json; author: Person; review: boolean; applyAt: string | null }) {
+    const base = this.current('flags', input.flag);
+    if (!base) return { error: 'That flag does not exist' };
+    const proposed = normalizeFlag(input.flag, input.proposed);
+    const changed = Object.keys({ ...base, ...proposed }).some((field) => !BOOKKEEPING.includes(field) && !same(base[field], proposed[field]));
+    if (!changed) return { error: 'This proposes no change' };
+    const needsApproval = this.settings.approvals || input.review;
+    this.sql.exec(
+      `INSERT INTO changes (flag, title, base, proposed, author_id, author_name, created_at, status, needs_approval, apply_at, workspace, env_name)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      input.flag,
+      input.title,
+      JSON.stringify(base),
+      JSON.stringify(proposed),
+      input.author.id,
+      input.author.name,
+      new Date().toISOString(),
+      needsApproval ? 'pending' : 'approved',
+      needsApproval ? 1 : 0,
+      input.applyAt,
+      input.workspace,
+      input.envName,
+    );
+    const id = this.sql.exec('SELECT last_insert_rowid() AS id').one().id as number;
+    const when = input.applyAt ? `, scheduled for ${input.applyAt}` : '';
+    await this.audit(input, input.author, { action: 'requested', kind: 'change', summary: `${needsApproval ? 'Requested approval for' : 'Scheduled'} change #${id}: ${input.title}${when}`, before: base, after: proposed });
+    await this.scheduleNext();
+    return { change: this.change(id)! as Change };
+  }
+
+  async reviewChange(id: number, reviewer: Person, decision: 'approved' | 'rejected', comment: string) {
+    const change = this.change(id);
+    if (!change) return { error: 'Change not found', status: 404 };
+    if (change.status !== 'pending') return { error: 'This change is no longer waiting for a review', status: 409 };
+    // Four eyes: the person who proposed a change cannot be the one who approves it.
+    if (decision === 'approved' && change.author.id === reviewer.id) return { error: 'You cannot approve your own change. Ask another member.', status: 403 };
+    const reviews = [...change.reviews, { by: reviewer, decision, comment, at: new Date().toISOString() }];
+    this.sql.exec('UPDATE changes SET reviews = ? WHERE id = ?', JSON.stringify(reviews), id);
+    if (decision === 'rejected') {
+      this.close(id, 'rejected', reviewer.name);
+      await this.audit(change, reviewer, { action: 'rejected', kind: 'change', summary: `Rejected change #${id}: ${change.title}`, comment });
+      return { change: this.change(id)! as Change };
+    }
+    this.sql.exec(`UPDATE changes SET status = 'approved' WHERE id = ?`, id);
+    await this.audit(change, reviewer, { action: 'approved', kind: 'change', summary: `Approved change #${id}: ${change.title}`, comment });
+    // With no time set, an approved change takes effect at once.
+    if (!change.applyAt || Date.parse(change.applyAt) <= Date.now()) await this.applyChange(id, reviewer);
+    else await this.scheduleNext();
+    return { change: this.change(id)! as Change };
+  }
+
+  /** Puts an approved change into effect. `by` is who triggered it; a timer passes the author. */
+  async applyChange(id: number, by: Person, scheduled = false) {
+    const change = this.change(id);
+    if (!change) return { error: 'Change not found', status: 404 };
+    if (change.status !== 'approved') return { error: change.status === 'pending' ? 'This change has not been approved yet' : 'This change is already closed', status: 409 };
+    const current = this.current('flags', change.flag);
+    const result = current ? mergeProposal(change.base, change.proposed, current) : null;
+    if (!current || !result || 'conflicts' in result) {
+      const failure = !current ? 'The flag was deleted before this change could be applied.' : `Someone else changed ${(result as { conflicts: string[] }).conflicts.join(', ')} after this was proposed. Propose it again from the current flag.`;
+      this.close(id, 'failed', by.name, failure);
+      await this.audit(change, by, { action: 'failed', kind: 'change', summary: `Change #${id} could not be applied: ${failure}` });
+      await this.scheduleNext();
+      return { change: this.change(id)! as Change };
+    }
+    const item = this.store('flags', change.flag, result.merged);
+    this.changed('patch', { path: `/flags/${change.flag}`, data: item });
+    this.close(id, 'applied', scheduled ? 'schedule' : by.name);
+    const approvers = change.reviews.filter((review) => review.decision === 'approved').map((review) => review.by.name);
+    const how = [scheduled ? 'on schedule' : '', approvers.length ? `approved by ${approvers.join(', ')}` : ''].filter(Boolean).join(', ');
+    await this.audit(change, scheduled ? change.author : by, {
+      action: 'updated',
+      kind: 'flags',
+      summary: `${describeChange('flags', current, item)} (change #${id}${how ? ', ' + how : ''})`,
+      comment: change.title,
+      before: current,
+      after: item,
+    });
+    await this.scheduleNext();
+    return { change: this.change(id)! as Change };
+  }
+
+  async cancelChange(id: number, by: Person, mayCancelOthers: boolean) {
+    const change = this.change(id);
+    if (!change) return { error: 'Change not found', status: 404 };
+    if (change.status !== 'pending' && change.status !== 'approved') return { error: 'This change is already closed', status: 409 };
+    if (change.author.id !== by.id && !mayCancelOthers) return { error: 'Only the author or an admin can cancel a change', status: 403 };
+    this.close(id, 'cancelled', by.name);
+    await this.audit(change, by, { action: 'cancelled', kind: 'change', summary: `Cancelled change #${id}: ${change.title}` });
+    await this.scheduleNext();
+    return { change: this.change(id)! as Change };
+  }
+
+  /** The timer: applies every scheduled change that is due, then sleeps until the next one. */
+  async alarm() {
+    const due = this.sql.exec(`SELECT id FROM changes WHERE status = 'approved' AND apply_at IS NOT NULL AND apply_at <= ? ORDER BY apply_at, id`, new Date().toISOString()).toArray();
+    for (const row of due) {
+      const change = this.change(row.id as number)!;
+      await this.applyChange(change.id, change.author, true);
+    }
+    await this.scheduleNext();
   }
 
   // ---- Internals --------------------------------------------------------

@@ -62,6 +62,29 @@ export type Environment = EnvSummary & {
   /** The last 14 days: flag -> day -> variation -> count. */
   series: Record<string, Record<string, Record<string, number>>>;
   connections: { server: number; js: number; mobile: number };
+  settings: EnvSettings;
+  /** Changes waiting for approval or for their scheduled time. */
+  openChanges: number;
+};
+
+export type EnvSettings = { approvals: boolean };
+export type Review = { by: { id: string; name: string }; decision: 'approved' | 'rejected'; comment: string; at: string };
+/** A proposed edit to one flag. It may need approval, wait for a set time, or both. */
+export type Change = {
+  id: number;
+  flag: string;
+  title: string;
+  base: Flag;
+  proposed: Flag;
+  author: { id: string; name: string };
+  createdAt: string;
+  status: 'pending' | 'approved' | 'applied' | 'rejected' | 'cancelled' | 'failed';
+  needsApproval: boolean;
+  applyAt: string | null;
+  reviews: Review[];
+  closedAt: string | null;
+  closedBy: string | null;
+  failure: string | null;
 };
 
 export type Role = 'reader' | 'writer' | 'admin' | 'owner';
@@ -170,8 +193,16 @@ export const api = {
     return res.blob();
   },
   /** `ifVersion` is the version the edit started from; the server refuses the save if someone else saved since. */
-  saveFlag: (id: string, flagKey: string, flag: object, comment?: string, ifVersion?: number) =>
-    request<Flag>('PUT', `/envs/${enc(id)}/flags/${enc(flagKey)}${query({ comment, ifVersion })}`, flag),
+  saveFlag: (id: string, flagKey: string, flag: object, comment?: string, ifVersion?: number, bypass?: boolean) =>
+    request<Flag>('PUT', `/envs/${enc(id)}/flags/${enc(flagKey)}${query({ comment, ifVersion, bypass: bypass ? 'true' : undefined })}`, flag),
+  updateSettings: (id: string, settings: EnvSettings) => request<EnvSettings>('PATCH', `/envs/${enc(id)}/settings`, settings),
+  changes: (id: string) => request<Change[]>('GET', `/envs/${enc(id)}/changes`),
+  createChange: (id: string, input: { flag: string; title: string; proposed: object; review: boolean; applyAt: string | null }) =>
+    request<Change>('POST', `/envs/${enc(id)}/changes`, input),
+  reviewChange: (id: string, change: number, decision: 'approve' | 'reject', comment: string) =>
+    request<Change>('POST', `/envs/${enc(id)}/changes/${change}/review`, { decision, comment }),
+  applyChange: (id: string, change: number) => request<Change>('POST', `/envs/${enc(id)}/changes/${change}/apply`),
+  cancelChange: (id: string, change: number) => request<Change>('POST', `/envs/${enc(id)}/changes/${change}/cancel`),
   deleteFlag: (id: string, flagKey: string) => request<null>('DELETE', `/envs/${enc(id)}/flags/${enc(flagKey)}`),
   saveSegment: (id: string, segmentKey: string, segment: object, comment?: string, ifVersion?: number) =>
     request<Segment>('PUT', `/envs/${enc(id)}/segments/${enc(segmentKey)}${query({ comment, ifVersion })}`, segment),

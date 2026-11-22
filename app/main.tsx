@@ -9,6 +9,7 @@ import { FlagPage } from './flag';
 import { SegmentList, SegmentPage } from './segments';
 import { ConnectPage, SettingsPage } from './pages';
 import { AuditPage } from './audit';
+import { ChangesPage } from './changes';
 import { TeamPage } from './team';
 
 const REPO = 'https://github.com/Anuragtech02/flagport';
@@ -249,6 +250,7 @@ function EnvSwitcher({ envs, currentId, sectionFor, onNew }: { envs: EnvSummary[
 const NAV: { section: Section; label: string; icon: string }[] = [
   { section: 'flags', label: 'Flags', icon: 'flag' },
   { section: 'segments', label: 'Segments', icon: 'segment' },
+  { section: 'changes', label: 'Changes', icon: 'clock' },
   { section: 'activity', label: 'Audit log', icon: 'activity' },
   { section: 'connect', label: 'Connect SDKs', icon: 'plug' },
   { section: 'team', label: 'Team', icon: 'shield' },
@@ -347,6 +349,7 @@ function Workspace({ onSignOut }: { onSignOut: () => void }) {
     );
   } else if (route.section === 'flags') screen = route.key ? <FlagPage flagKey={route.key} key={route.key} /> : <FlagList />;
   else if (route.section === 'segments') screen = route.key ? <SegmentPage segmentKey={route.key} key={route.key} /> : <SegmentList />;
+  else if (route.section === 'changes') screen = <ChangesPage />;
   else if (route.section === 'activity') screen = <AuditPage />;
   else if (route.section === 'team') screen = <TeamPage />;
   else if (route.section === 'connect') screen = <ConnectPage />;
@@ -366,6 +369,7 @@ function Workspace({ onSignOut }: { onSignOut: () => void }) {
                 {item.label}
                 {env && item.section === 'flags' && <span className="count">{Object.keys(env.flags).length}</span>}
                 {env && item.section === 'segments' && <span className="count">{Object.keys(env.segments).length}</span>}
+                {env && item.section === 'changes' && env.openChanges > 0 && <span className="count count-open">{env.openChanges}</span>}
               </a>
             ))}
           </nav>

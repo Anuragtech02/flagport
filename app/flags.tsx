@@ -41,10 +41,16 @@ export function SwitchFlag({ flag, onClose }: { flag: Flag; onClose: () => void 
   return (
     <Modal title={`Turn ${turningOn ? 'on' : 'off'} ${flag.name || flag.key}?`} onClose={onClose}>
       <ModalForm
-        submit={turningOn ? 'Turn on' : 'Turn off'}
+        submit={env!.settings.approvals ? 'Ask for approval' : turningOn ? 'Turn on' : 'Turn off'}
         onClose={onClose}
         onSubmit={async () => {
           const { version, updatedAt, deleted, key, ...body } = after;
+          if (env!.settings.approvals) {
+            const created = await api.createChange(env!.id, { flag: flag.key, title: comment.trim() || `Turn ${turningOn ? 'on' : 'off'} ${flag.name || flag.key}`, proposed: body, review: true, applyAt: null });
+            await reload();
+            toast(`Change #${created.id} is waiting for approval`);
+            return;
+          }
           await api.saveFlag(env!.id, flag.key, body, comment.trim(), version);
           await reload();
           toast(`${flag.key} is ${turningOn ? 'on' : 'off'}`);
@@ -55,7 +61,8 @@ export function SwitchFlag({ flag, onClose }: { flag: Flag; onClose: () => void 
             ? <>Targeting starts straight away in <strong>{env!.name}</strong>: {describeFlag(after).replace(/^Serving/, 'serving')}.</>
             : <>Everyone in <strong>{env!.name}</strong> gets <strong>{describeServe(flag, { variation: flag.offVariation })}</strong> straight away.</>}
         </p>
-        <Field label="Note for the activity log (optional)">
+        {env!.settings.approvals && <p>{env!.name} requires approval, so this is sent to another member first and changes nothing until they approve.</p>}
+        <Field label={env!.settings.approvals ? 'Title of this change (optional)' : 'Note for the audit log (optional)'}>
           {(id) => <input id={id} maxLength={280} value={comment} onChange={(event) => setComment(event.target.value)} placeholder="Why this change?" />}
         </Field>
       </ModalForm>

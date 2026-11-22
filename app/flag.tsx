@@ -8,6 +8,7 @@ import {
 } from './model';
 import { go, href, setUnsaved, useApp, useCan, useEnv } from './state';
 import { Button, Chips, CopyButton, Empty, Field, Icon, Modal, ModalForm, Swatch, Tabs, Toggle, useToast } from './ui';
+import { whenText } from './changes';
 import { VariationPill, parseVariation } from './flags';
 
 const ATTRIBUTES = ['key', 'email', 'name', 'country', 'ip', 'anonymous', 'plan', 'role', 'organization', 'appVersion'];
@@ -409,11 +410,15 @@ function History({ flagKey }: { flagKey: string }) {
 
 // ---- The page ---------------------------------------------------------------------------------
 
+/** A time as the value a datetime-local input expects, in the viewer's own time zone. */
+const localInput = (time: number) => new Date(time - new Date(time).getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+
 type Tab = 'targeting' | 'variations' | 'insights' | 'history' | 'settings';
 
 export function FlagPage({ flagKey }: { flagKey: string }) {
   const { reload, me } = useApp();
-  const canWrite = useCan()('writer');
+  const can = useCan();
+  const canWrite = can('writer');
   const env = useEnv();
   const toast = useToast();
   const saved = env.flags[flagKey] as Flag | undefined;
@@ -424,6 +429,9 @@ export function FlagPage({ flagKey }: { flagKey: string }) {
   const [reviewing, setReviewing] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [comment, setComment] = useState('');
+  const [askReview, setAskReview] = useState(false);
+  const [applyAt, setApplyAt] = useState('');
+  const [skipApproval, setSkipApproval] = useState(false);
 
   const edited = useMemo(() => (draft ? { ...draft, ...splitTargets(targets) } : undefined), [draft, targets]);
   const changes = useMemo(() => (base && edited ? flagChanges(base, edited) : []), [base, edited]);
@@ -456,11 +464,30 @@ export function FlagPage({ flagKey }: { flagKey: string }) {
   }
 
   const reach = audience(draft);
+  // A change goes through review when this environment requires it (unless an admin skips that) or when the author asks.
+  const required = env.settings.approvals;
+  const viaReview = (required && !skipApproval) || askReview;
+  const proposing = viaReview || applyAt !== '';
   const save = async () => {
     const { version, updatedAt, deleted, key, ...body } = edited;
+    if (proposing) {
+      const created = await api.createChange(env.id, {
+        flag: flagKey,
+        title: comment.trim() || changes[0],
+        proposed: body,
+        review: viaReview,
+        applyAt: applyAt ? new Date(applyAt).toISOString() : null,
+      });
+      adopt(base);
+      setComment('');
+      await reload();
+      toast(created.status === 'pending' ? `Change #${created.id} is waiting for approval` : `Change #${created.id} is scheduled for ${whenText(created.applyAt!)}`);
+      go(href(env.id, 'changes'));
+      return;
+    }
     let result: Flag;
     try {
-      result = await api.saveFlag(env.id, flagKey, body, comment.trim(), base.version);
+      result = await api.saveFlag(env.id, flagKey, body, comment.trim(), base.version, required && skipApproval);
     } catch (e) {
       // Someone else saved first: fetch their version so the warning above the editor appears.
       if (e instanceof ApiError && e.status === 409) await reload();
@@ -500,6 +527,13 @@ export function FlagPage({ flagKey }: { flagKey: string }) {
           { id: 'settings', label: 'Settings' },
         ]}
       />
+
+      {env.openChanges > 0 && (
+        <a className="notice notice-link" href={href(env.id, 'changes')}>
+          <Icon name="clock" />
+          <span>{env.openChanges === 1 ? 'One change is' : `${env.openChanges} changes are`} waiting in {env.name}. Check whether one touches this flag before you edit it.</span>
+        </a>
+      )}
 
       {stale && dirty && (
         <div className="notice notice-warn">
@@ -549,13 +583,13 @@ export function FlagPage({ flagKey }: { flagKey: string }) {
             <span className="muted">{canWrite ? problems[0] ?? changes[0] : `Your role is ${me.role}, which can look but not save.`}</span>
           </div>
           <Button onClick={() => adopt(base)}>Discard</Button>
-          <Button kind="primary" disabled={!canWrite} onClick={() => setReviewing(true)}>Review and save</Button>
+          <Button kind="primary" disabled={!canWrite} onClick={() => { setAskReview(false); setApplyAt(''); setSkipApproval(false); setReviewing(true); }}>Review and save</Button>
         </div>
       )}
 
       {reviewing && (
         <Modal title={`Review changes to ${draft.name || draft.key}`} onClose={() => setReviewing(false)} wide>
-          <ModalForm submit={`Save to ${env.name}`} onClose={() => setReviewing(false)} disabled={problems.length > 0} onSubmit={save}>
+          <ModalForm submit={viaReview ? 'Ask for approval' : applyAt ? 'Schedule change' : `Save to ${env.name}`} onClose={() => setReviewing(false)} disabled={problems.length > 0} onSubmit={save}>
             <ul className="review">
               {changes.map((change) => <li key={change}><Icon name="check" size={14} />{change}</li>)}
             </ul>
@@ -568,11 +602,29 @@ export function FlagPage({ flagKey }: { flagKey: string }) {
                 </div>
               </div>
             )}
+            <fieldset className="checks when">
+              <legend>When it takes effect</legend>
+              {required ? (
+                <p className="when-note"><Icon name="shield" size={15} />{env.name} requires approval, so another member has to approve this before it takes effect.</p>
+              ) : (
+                <label className="check"><input type="checkbox" checked={askReview} onChange={(event) => setAskReview(event.target.checked)} />Ask another member to approve it first</label>
+              )}
+              <label className="check">
+                <input type="checkbox" checked={applyAt !== ''} disabled={skipApproval} onChange={(event) => setApplyAt(event.target.checked ? localInput(Date.now() + 3_600_000) : '')} />
+                Apply at a set time
+              </label>
+              {applyAt !== '' && (
+                <input type="datetime-local" aria-label="When to apply" value={applyAt} min={localInput(Date.now())} onChange={(event) => setApplyAt(event.target.value)} />
+              )}
+              {required && can('admin') && (
+                <label className="check"><input type="checkbox" checked={skipApproval} onChange={(event) => { setSkipApproval(event.target.checked); if (event.target.checked) setApplyAt(''); }} />Skip approval and save now. The audit log records that you did.</label>
+              )}
+            </fieldset>
             <p className="muted">
-              After saving, {edited.on ? <>this flag serves by its rules, with <strong>{describeServe(edited, edited.fallthrough)}</strong> as the default.</> : <>this flag is off and everyone gets <strong>{show(edited.variations[edited.offVariation])}</strong>.</>} Connected SDKs get the change within moments.
+              {proposing ? 'Once it applies' : 'After saving'}, {edited.on ? <>this flag serves by its rules, with <strong>{describeServe(edited, edited.fallthrough)}</strong> as the default.</> : <>this flag is off and everyone gets <strong>{show(edited.variations[edited.offVariation])}</strong>.</>} Connected SDKs get the change within moments.
             </p>
-            <Field label="Note for the activity log (optional)">
-              {(id) => <input id={id} maxLength={280} value={comment} onChange={(event) => setComment(event.target.value)} placeholder="Why this change?" />}
+            <Field label={proposing ? 'Title of this change' : 'Note for the audit log (optional)'}>
+              {(id) => <input id={id} maxLength={200} value={comment} onChange={(event) => setComment(event.target.value)} placeholder={proposing ? changes[0] : 'Why this change?'} />}
             </Field>
           </ModalForm>
         </Modal>

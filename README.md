@@ -109,6 +109,17 @@ the `workers.dev` address keeps working alongside it.
 Flags are stored in LaunchDarkly's own format, so nothing is translated on
 the way in or out.
 
+### Approvals and scheduled changes
+
+A change to a flag can be proposed instead of saved: it then waits for another
+member's approval, for a set time, or both. An environment can require
+approval for every change to an existing flag; admins can skip it, and the
+audit log records that they did.
+
+When a change is applied, only the fields it actually altered are written. An
+unrelated edit made in the meantime is kept. If someone else changed the same
+field, the change fails rather than overwriting their work.
+
 ### Admin API
 
 Every route except the first two needs `Authorization: Bearer <key>`, where
@@ -138,6 +149,12 @@ flags and segments, `admin` can also manage environments and members, and
 | `PUT /api/envs/:id/flags/:key` | Creates or replaces a flag. `?comment=` adds a note to the audit log; `?ifVersion=` refuses the save if the flag changed since that version |
 | `DELETE /api/envs/:id/flags/:key` | Deletes a flag |
 | `PUT` and `DELETE /api/envs/:id/segments/:key` | The same, for segments |
+| `PATCH /api/envs/:id/settings` | `{ "approvals": true }` requires approval for flag changes in that environment |
+| `GET /api/envs/:id/changes` | Proposed changes: open ones first, then recently closed |
+| `POST /api/envs/:id/changes` | Proposes a change: `{ flag, title, proposed, review, applyAt }`. `proposed` is the whole flag as it should become; `applyAt` schedules it |
+| `POST /api/envs/:id/changes/:n/review` | `{ "decision": "approve" }` or `"reject"`, with an optional `comment`. The author cannot approve their own |
+| `POST /api/envs/:id/changes/:n/apply` | Applies an approved change now instead of at its scheduled time |
+| `POST /api/envs/:id/changes/:n/cancel` | Cancels an open change (its author, or an admin) |
 | `POST /api/envs/:id/import` | Imports from LaunchDarkly: `{ apiToken, projectKey, environmentKey }` |
 
 ## Develop and test
@@ -154,7 +171,7 @@ With the dev server running:
 
 ```bash
 npm test          # the importer, checked by the real SDK
-npm run test:e2e  # real LaunchDarkly SDKs against the running server, plus workspaces, roles and the audit log
+npm run test:e2e  # real LaunchDarkly SDKs against the running server, plus workspaces, roles, the audit log, approvals and schedules
 ```
 
 The end-to-end tests also run against a deployed instance:
@@ -166,7 +183,8 @@ workspace test needs sign-ups open.
 - Members sign in with keys, not single sign-on. A lost key is replaced by an
   admin; it cannot be recovered.
 - Roles apply to the whole workspace, not per environment or per flag.
-- No approvals or scheduled changes yet.
+- Approvals and schedules cover flags, not segments, and one approval is
+  always enough.
 - A workspace can hold 10 environments. The instance owner is not limited.
 - Sign-ups are rate limited per network, and that is the only abuse control.
 - The audit log keeps the newest 5,000 entries per workspace.

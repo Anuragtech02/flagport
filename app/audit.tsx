@@ -39,7 +39,7 @@ function difference(before: string[], after: string[]): Line[] {
   return out;
 }
 
-function Diff({ before, after }: { before: unknown; after: unknown }) {
+export function Diff({ before, after }: { before: unknown; after: unknown }) {
   const rows = useMemo(() => {
     const all = difference(lines(before), lines(after));
     // Only the changed lines, with two unchanged lines either side for bearings.
