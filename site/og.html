@@ -1,0 +1,51 @@
+<!doctype html>
+<!--
+  The social preview image (public/og.png) and the home-screen icon.
+  Rendered at 1200x630 with headless Chrome:
+    chrome --headless=new --hide-scrollbars --window-size=1200,630 --virtual-time-budget=4000 --screenshot=public/og.png site/og.html
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400..700&family=Geist+Mono:wght@400..500&family=Instrument+Serif:ital@1&display=block" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; margin: 0; }
+  html, body { width: 1200px; height: 630px; overflow: hidden; }
+  body { background: #050505; color: #F5F5F3; font-family: 'Geist', sans-serif; position: relative; }
+  /* A silver band and a lime glow, echoing the ribbon on the site. */
+  .band { position: absolute; left: -120px; right: -120px; bottom: -310px; height: 420px; border-radius: 50%; transform: rotate(-7deg);
+    background: linear-gradient(100deg, #101012 0%, #5E6268 22%, #F2F4F5 42%, #8E949A 58%, #1B1C1F 78%, #C4F82A 118%); filter: blur(1px); opacity: .9; }
+  .glow { position: absolute; right: -160px; top: -220px; width: 720px; height: 720px; border-radius: 50%; background: radial-gradient(closest-side, rgba(196, 248, 42, .2), transparent); }
+  .shade { position: absolute; inset: 0; background: linear-gradient(180deg, rgba(5, 5, 5, 0) 55%, rgba(5, 5, 5, .55)); }
+  main { position: absolute; inset: 0; padding: 64px 72px; display: flex; flex-direction: column; }
+  .brand { display: flex; align-items: center; gap: 16px; font-size: 34px; font-weight: 600; letter-spacing: -.03em; }
+  .pill { width: 62px; height: 36px; border-radius: 18px; background: linear-gradient(90deg, #fff, #E9FF9C 55%, #C4F82A); position: relative; }
+  .pill::after { content: ''; position: absolute; right: 5px; top: 5px; width: 26px; height: 26px; border-radius: 50%; background: #fff; box-shadow: 0 2px 6px rgba(0, 0, 0, .25); }
+  .tag { margin-left: auto; font: 500 20px 'Geist Mono', monospace; color: #0A0D00; background: linear-gradient(90deg, #fff, #E9FF9C 55%, #C4F82A); padding: 8px 18px; border-radius: 999px; letter-spacing: 0; }
+  h1 { margin-top: 66px; font-size: 82px; line-height: 1; font-weight: 600; letter-spacing: -.045em; white-space: nowrap; }
+  h1 em { font-family: 'Instrument Serif', serif; font-weight: 400; letter-spacing: -.02em; color: #D4FF3F; }
+  p { margin-top: 30px; font-size: 31px; line-height: 1.3; color: #B4B4AF; max-width: 640px; letter-spacing: -.01em; }
+  .big { position: absolute; right: 64px; bottom: 64px; width: 250px; height: 136px; border-radius: 68px; background: linear-gradient(120deg, #D9FF4A, #B8F020); box-shadow: 0 30px 80px -10px rgba(196, 248, 42, .5), inset 0 -10px 24px rgba(0, 0, 0, .18), inset 0 6px 14px rgba(255, 255, 255, .5); transform: rotate(-10deg); }
+  .big::after { content: ''; position: absolute; right: 14px; top: 14px; width: 108px; height: 108px; border-radius: 50%; background: radial-gradient(circle at 35% 30%, #fff, #E4E6EA 70%, #C9CCD2); box-shadow: 0 10px 24px rgba(0, 0, 0, .35); }
+  /* The icon variant: add #icon to the address. */
+  body.icon main, body.icon .band, body.icon .glow, body.icon .shade, body.icon .big { display: none; }
+  .mark { display: none; }
+  body.icon { width: 512px; height: 512px; }
+  body.icon .mark { display: block; position: absolute; left: 64px; top: 149px; width: 384px; height: 214px; border-radius: 107px; background: linear-gradient(90deg, #fff, #E9FF9C 55%, #C4F82A); }
+  body.icon .mark::after { content: ''; position: absolute; right: 32px; top: 32px; width: 150px; height: 150px; border-radius: 50%; background: #fff; }
+</style>
+</head>
+<body>
+<div class="glow"></div>
+<div class="band"></div>
+<div class="shade"></div>
+<div class="big"></div>
+<div class="mark"></div>
+<main>
+  <div class="brand"><span class="pill"></span>Flagport<span class="tag">Open source</span></div>
+  <h1>Leave LaunchDarkly.<br>Keep <em>every line</em> of flag code.</h1>
+  <p>A feature flag server for the LaunchDarkly SDKs you already use.</p>
+</main>
+<script>if (location.hash === '#icon') document.body.classList.add('icon');</script>
+</body>
+</html>
