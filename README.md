@@ -38,7 +38,7 @@ sponsored by LaunchDarkly. LaunchDarkly is a trademark of its owner.
 
 ## Use the hosted server
 
-A hosted instance runs at <https://flagport.apal895.workers.dev>. Open the
+A hosted instance runs at <https://flagport.anuragpal.cloud>. Open the
 dashboard, create a workspace, and you get a workspace key. There are no
 accounts and no emails: the key is the only way into your workspace and cannot
 be recovered, so save it.
@@ -74,6 +74,18 @@ sign up.
 | `SIGNUPS` | secret or var | Set to `open` to let any visitor create a workspace of their own. Anything else, or unset, keeps the instance private. |
 
 To open sign-ups, run `npx wrangler secret put SIGNUPS` and enter `open`.
+
+### Custom domain
+
+If the domain's DNS is on the same Cloudflare account, one deploy attaches it:
+
+```bash
+npm run deploy -- --domain flags.example.com
+```
+
+Cloudflare creates the DNS record and the certificate. The domain stays
+attached on later deploys, so plain `npm run deploy` is enough afterwards, and
+the `workers.dev` address keeps working alongside it.
 
 ## How it is built
 

@@ -6,6 +6,9 @@
   // Needed by LaunchDarkly's evaluator package (node:events).
   "compatibility_flags": ["nodejs_compat"],
   "assets": { "directory": "./public" },
+  // Keeps the workers.dev address working after a custom domain is added
+  // (see "Custom domain" in the README). Without this, adding one turns it off.
+  "workers_dev": true,
   "durable_objects": {
     "bindings": [
       { "name": "ENV_DO", "class_name": "EnvironmentDO" },
