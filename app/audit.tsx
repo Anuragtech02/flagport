@@ -102,7 +102,7 @@ export function AuditList({ entries, showKey, showEnv }: { entries: AuditEntry[]
 // ---- The page ------------------------------------------------------------------
 
 const PAGE = 100;
-const KINDS = [['', 'Everything'], ['flags', 'Flags'], ['segments', 'Segments'], ['environment', 'Environments'], ['member', 'Members']];
+const KINDS = [['', 'Everything'], ['flags', 'Flags'], ['segments', 'Segments'], ['change', 'Change requests'], ['environment', 'Environments'], ['member', 'Members'], ['webhook', 'Integrations']];
 
 export function AuditPage() {
   const env = useEnv();

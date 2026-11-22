@@ -11,6 +11,7 @@ import { ConnectPage, SettingsPage } from './pages';
 import { AuditPage } from './audit';
 import { ChangesPage } from './changes';
 import { TeamPage } from './team';
+import { IntegrationsPage } from './integrations';
 
 const REPO = 'https://github.com/Anuragtech02/flagport';
 
@@ -253,6 +254,7 @@ const NAV: { section: Section; label: string; icon: string }[] = [
   { section: 'changes', label: 'Changes', icon: 'clock' },
   { section: 'activity', label: 'Audit log', icon: 'activity' },
   { section: 'connect', label: 'Connect SDKs', icon: 'plug' },
+  { section: 'integrations', label: 'Integrations', icon: 'bolt' },
   { section: 'team', label: 'Team', icon: 'shield' },
   { section: 'settings', label: 'Settings', icon: 'settings' },
 ];
@@ -352,6 +354,7 @@ function Workspace({ onSignOut }: { onSignOut: () => void }) {
   else if (route.section === 'changes') screen = <ChangesPage />;
   else if (route.section === 'activity') screen = <AuditPage />;
   else if (route.section === 'team') screen = <TeamPage />;
+  else if (route.section === 'integrations') screen = <IntegrationsPage />;
   else if (route.section === 'connect') screen = <ConnectPage />;
   else screen = <SettingsPage />;
 

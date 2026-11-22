@@ -10,7 +10,7 @@
     "deploy": "npm run build && wrangler deploy",
     "typecheck": "tsc --noEmit && tsc --noEmit -p app",
     "test": "node --test test/import.test.mjs",
-    "test:e2e": "node test/e2e.mjs && node test/e2e-client.mjs && node test/e2e-workspaces.mjs && node test/e2e-access.mjs && node test/e2e-changes.mjs",
+    "test:e2e": "node test/e2e.mjs && node test/e2e-client.mjs && node test/e2e-workspaces.mjs && node test/e2e-access.mjs && node test/e2e-changes.mjs && node test/e2e-webhooks.mjs",
     "test:browser": "mkdir -p test/browser/vendor && cp node_modules/launchdarkly-js-client-sdk/dist/ldclient.min.js test/browser/vendor/ldclient-v3.min.js && cp node_modules/@launchdarkly/js-client-sdk/dist/index.js test/browser/vendor/ldclient-v4.js && python3 -m http.server 48790 --bind 127.0.0.1 --directory test/browser",
     "build": "npm run build:site && npm run build:app",
     "build:app": "esbuild app/main.tsx --bundle --minify --format=esm --target=es2020 --jsx=automatic --define:process.env.NODE_ENV=\\\"production\\\" --outfile=public/app/app.js",

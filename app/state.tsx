@@ -2,9 +2,9 @@
 import { createContext, useContext, useEffect, useState } from 'react';
 import { ROLES, type EnvSummary, type Environment, type Me, type Role } from './api';
 
-export type Section = 'flags' | 'segments' | 'changes' | 'activity' | 'connect' | 'team' | 'settings';
+export type Section = 'flags' | 'segments' | 'changes' | 'activity' | 'connect' | 'integrations' | 'team' | 'settings';
 export type Route = { env: string | null; section: Section; key: string | null };
-const SECTIONS: Section[] = ['flags', 'segments', 'changes', 'activity', 'connect', 'team', 'settings'];
+const SECTIONS: Section[] = ['flags', 'segments', 'changes', 'activity', 'connect', 'integrations', 'team', 'settings'];
 
 // Addresses look like #/e/<environment id>/<section>/<flag or segment key>.
 export function parseRoute(hash: string): Route {
@@ -73,7 +73,7 @@ export const useCan = () => {
 export const ROLE_NOTES: Record<Role, string> = {
   reader: 'Can see everything, change nothing',
   writer: 'Can change flags and segments',
-  admin: 'Can also manage environments and members',
+  admin: 'Can also manage environments, members and integrations',
   owner: 'Can do everything, including managing owners',
 };
 

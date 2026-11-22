@@ -98,7 +98,9 @@ the `workers.dev` address keeps working alongside it.
   every change to them.
 - `src/registry.ts`: one Durable Object that holds workspaces, their members,
   their environments and the audit log. Only a hash of each access key is
-  stored.
+  stored. It also queues and sends webhook deliveries.
+- `src/webhooks.ts`: the JSON and Slack message formats, signing, and the
+  check that an address is public.
 - `src/evaluate.ts`: evaluates flags for browser and mobile SDKs with
   LaunchDarkly's own open-source evaluator.
 - `src/ldimport.ts`: converts flags and segments read from the LaunchDarkly
@@ -119,6 +121,63 @@ audit log records that they did.
 When a change is applied, only the fields it actually altered are written. An
 unrelated edit made in the meantime is kept. If someone else changed the same
 field, the change fails rather than overwriting their work.
+
+### Webhooks and Slack
+
+Everything written to the audit log can be sent to a URL as it happens: a flag
+switched on, a change waiting for approval, a member added. Admins add
+webhooks on the Integrations page. Each one can be limited to kinds of change
+and to environments.
+
+- **Slack**: paste an incoming webhook URL. The message reads like a line of
+  the audit log, with a link back to what changed.
+- **Your own service**: signed JSON with who made the change, where, and the
+  full before and after.
+
+```json
+{
+  "version": 1,
+  "event": "flag.updated",
+  "id": 270,
+  "at": "2026-11-22T16:49:51.404Z",
+  "workspace": "5dca0c1421df3806",
+  "actor": { "id": "b0eb5448ce8f47a8", "name": "Asha Rao" },
+  "environment": { "id": "2663bf4183ee", "name": "Production" },
+  "kind": "flags",
+  "action": "updated",
+  "key": "dark-mode",
+  "summary": "Turned off",
+  "comment": "Hotfix for the contrast bug",
+  "before": { "on": true },
+  "after": { "on": false },
+  "url": "https://flagport.example/app/#/e/2663bf4183ee/flags/dark-mode"
+}
+```
+
+`before` and `after` hold the whole flag (shortened here). Events are named `<thing>.<action>`:
+`flag.created`, `flag.updated`, `flag.deleted`, the same for `segment`,
+`change.requested`, `change.approved`, `change.rejected`, `change.cancelled`,
+`change.failed`, `environment.*`, `member.*`, `webhook.*`, and `ping` for a
+test message.
+
+Every request carries `X-Flagport-Event`, `X-Flagport-Delivery`,
+`X-Flagport-Timestamp` and `X-Flagport-Signature`. The signature is
+`sha256=` followed by the HMAC-SHA256, in hex, of the timestamp, a dot and the
+raw body, keyed with the webhook's signing secret:
+
+```js
+const signed = headers['x-flagport-timestamp'] + '.' + rawBody;
+const expected = 'sha256=' + crypto.createHmac('sha256', secret).update(signed).digest('hex');
+```
+
+Answer with any 2xx status within 10 seconds. A timeout, a connection error, a
+5xx, 408 or 429 is tried again after 5 seconds, 1 minute and 10 minutes; any
+other answer is final. Redirects are not followed. Each webhook receives its
+messages in order, and the last 50 deliveries are kept for troubleshooting.
+
+Only public `https://` addresses are accepted. The full address is never
+returned by the API or written to the audit log, because a Slack webhook URL
+is itself a secret.
 
 ### Admin API
 
@@ -141,6 +200,13 @@ flags and segments, `admin` can also manage environments and members, and
 | `POST /api/members/:id/rotate` | Replaces a member's key; the old one stops working |
 | `DELETE /api/members/:id` | Removes a member |
 | `GET /api/audit` | The audit log, newest first. Filters: `env`, `kind`, `key`, `actor`, `before`, `limit`. `format=csv` exports it |
+| `GET /api/webhooks` | Lists webhooks with their last delivery (admins only, like every webhook route) |
+| `POST /api/webhooks` | Adds a webhook and returns its signing secret once: `{ name, url, format, kinds, envs }`. `format` is `slack` or `json`; empty `kinds` or `envs` mean all |
+| `PATCH /api/webhooks/:id` | Changes any of those fields, or `{ "enabled": false }` to turn it off |
+| `DELETE /api/webhooks/:id` | Removes a webhook and its delivery record |
+| `POST /api/webhooks/:id/test` | Sends a `ping` now and returns how it went |
+| `POST /api/webhooks/:id/secret` | Replaces the signing secret and returns the new one once |
+| `GET /api/webhooks/:id/deliveries` | The last 50 deliveries: event, result, attempts |
 | `GET /api/envs` | Lists environments |
 | `POST /api/envs` | Creates an environment: `{ "name": "Production" }` |
 | `GET /api/envs/:id` | Keys, flags, segments, connected SDKs and evaluation counts |
@@ -171,12 +237,14 @@ With the dev server running:
 
 ```bash
 npm test          # the importer, checked by the real SDK
-npm run test:e2e  # real LaunchDarkly SDKs against the running server, plus workspaces, roles, the audit log, approvals and schedules
+npm run test:e2e  # real LaunchDarkly SDKs against the running server, plus workspaces, roles, the audit log, approvals, schedules and webhooks
 ```
 
 The end-to-end tests also run against a deployed instance:
 `BASE=https://your-flagport.example ADMIN_TOKEN=... npm run test:e2e`. The
-workspace test needs sign-ups open.
+workspace test needs sign-ups open. Against a deployed instance the webhook
+test cannot receive anything on your machine, so it checks sending, retries
+and the delivery record with an address that cannot be reached.
 
 ## Known limits
 
@@ -185,6 +253,10 @@ workspace test needs sign-ups open.
 - Roles apply to the whole workspace, not per environment or per flag.
 - Approvals and schedules cover flags, not segments, and one approval is
   always enough.
+- Webhooks go to Slack or to a URL of your own; there is no Microsoft Teams,
+  email or PagerDuty format. A workspace can have 10 of them, a failed
+  delivery cannot be sent again by hand, and a webhook that keeps failing is
+  not turned off automatically.
 - A workspace can hold 10 environments. The instance owner is not limited.
 - Sign-ups are rate limited per network, and that is the only abuse control.
 - The audit log keeps the newest 5,000 entries per workspace.

@@ -1,4 +1,5 @@
 import { DurableObject } from 'cloudflare:workers';
+import { eventName, jsonBody, linkFor, sign, slackBody, urlHint, type Delivery, type Webhook, type WebhookEvent, type WebhookFormat } from './webhooks';
 
 export interface EnvRecord {
   id: string;
@@ -66,6 +67,12 @@ const MAX_MEMBERS = 50;
 const AUDIT_KEPT = 5_000;
 /** A before or after snapshot larger than this is left out of the audit entry. */
 const MAX_SNAPSHOT = 65_536;
+const MAX_WEBHOOKS = 10;
+/** Finished deliveries kept per webhook, for troubleshooting. */
+const DELIVERIES_KEPT = 50;
+/** How long to wait before each further attempt. After the last one the delivery is given up. */
+const RETRY_AFTER = [5_000, 60_000, 600_000];
+const DELIVERY_TIMEOUT = 10_000;
 
 const snapshot = (value: unknown): string | null => {
   if (value === undefined || value === null) return null;
@@ -99,7 +106,20 @@ export class RegistryDO extends DurableObject<unknown> {
          action TEXT NOT NULL, kind TEXT NOT NULL, key TEXT NOT NULL, summary TEXT NOT NULL,
          comment TEXT NOT NULL DEFAULT '', before TEXT, after TEXT
        );
-       CREATE INDEX IF NOT EXISTS audit_by_workspace ON audit (workspace, id)`,
+       CREATE INDEX IF NOT EXISTS audit_by_workspace ON audit (workspace, id);
+       CREATE TABLE IF NOT EXISTS webhooks (
+         id TEXT PRIMARY KEY, workspace TEXT NOT NULL, name TEXT NOT NULL, url TEXT NOT NULL,
+         format TEXT NOT NULL, secret TEXT NOT NULL, kinds TEXT NOT NULL, envs TEXT NOT NULL,
+         enabled INTEGER NOT NULL DEFAULT 1, link TEXT NOT NULL, created_at TEXT NOT NULL
+       );
+       CREATE INDEX IF NOT EXISTS webhooks_by_workspace ON webhooks (workspace);
+       CREATE TABLE IF NOT EXISTS deliveries (
+         id INTEGER PRIMARY KEY AUTOINCREMENT, webhook TEXT NOT NULL, event TEXT NOT NULL, summary TEXT NOT NULL,
+         body TEXT, status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, next_at INTEGER,
+         code INTEGER, error TEXT, created_at TEXT NOT NULL, finished_at TEXT
+       );
+       CREATE INDEX IF NOT EXISTS deliveries_by_webhook ON deliveries (webhook, id);
+       CREATE INDEX IF NOT EXISTS deliveries_due ON deliveries (next_at)`,
     );
     // Environments from before workspaces existed belong to the instance owner.
     const columns = sql.exec(`SELECT name FROM pragma_table_info('envs')`).toArray();
@@ -230,12 +250,13 @@ export class RegistryDO extends DurableObject<unknown> {
 
   // ---- Audit log --------------------------------------------------------
 
-  record(entry: AuditInput) {
+  async record(entry: AuditInput) {
+    const at = new Date().toISOString();
     this.sql.exec(
       `INSERT INTO audit (workspace, at, actor_id, actor_name, env_id, env_name, action, kind, key, summary, comment, before, after)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       entry.workspace,
-      new Date().toISOString(),
+      at,
       entry.actor.id,
       entry.actor.name,
       entry.envId ?? null,
@@ -257,6 +278,8 @@ export class RegistryDO extends DurableObject<unknown> {
       entry.workspace,
       AUDIT_KEPT,
     );
+    const id = this.sql.exec('SELECT MAX(id) AS id FROM audit WHERE workspace = ?', entry.workspace).one().id as number;
+    await this.announce({ ...entry, id, at });
   }
 
   audit(workspace: string, filter: AuditFilter = {}) {
@@ -290,6 +313,236 @@ export class RegistryDO extends DurableObject<unknown> {
         before: row.before ? JSON.parse(row.before as string) : null,
         after: row.after ? JSON.parse(row.after as string) : null,
       }));
+  }
+
+  // ---- Webhooks ---------------------------------------------------------
+
+  private toDelivery(row: Record<string, unknown>): Delivery {
+    return {
+      id: row.id as number,
+      event: row.event as string,
+      summary: row.summary as string,
+      status: row.status as Delivery['status'],
+      attempts: row.attempts as number,
+      code: (row.code as number) ?? null,
+      error: (row.error as string) ?? null,
+      createdAt: row.created_at as string,
+      finishedAt: (row.finished_at as string) ?? null,
+      nextAt: row.next_at ? new Date(row.next_at as number).toISOString() : null,
+    };
+  }
+
+  private toWebhook(row: Record<string, unknown>): Webhook {
+    const last = this.sql.exec('SELECT * FROM deliveries WHERE webhook = ? ORDER BY id DESC LIMIT 1', row.id).toArray();
+    return {
+      id: row.id as string,
+      name: row.name as string,
+      urlHint: urlHint(row.url as string),
+      format: row.format as WebhookFormat,
+      kinds: JSON.parse(row.kinds as string),
+      envs: JSON.parse(row.envs as string),
+      enabled: row.enabled === 1,
+      createdAt: row.created_at as string,
+      last: last.length ? this.toDelivery(last[0]) : null,
+    };
+  }
+
+  private webhookRow(workspace: string, id: string) {
+    const rows = this.sql.exec('SELECT * FROM webhooks WHERE workspace = ? AND id = ?', workspace, id).toArray();
+    return rows.length ? rows[0] : null;
+  }
+
+  webhooks(workspace: string): Webhook[] {
+    return this.sql
+      .exec('SELECT * FROM webhooks WHERE workspace = ? ORDER BY created_at', workspace)
+      .toArray()
+      .map((row) => this.toWebhook(row));
+  }
+
+  /** `link` is the address of the dashboard, so messages can point back to what changed. */
+  createWebhook(workspace: string, input: { id: string; name: string; url: string; format: WebhookFormat; kinds: string[]; envs: string[]; secret: string; link: string }): Webhook | 'full' {
+    const count = this.sql.exec('SELECT COUNT(*) AS n FROM webhooks WHERE workspace = ?', workspace).one().n as number;
+    if (count >= MAX_WEBHOOKS) return 'full';
+    this.sql.exec(
+      'INSERT INTO webhooks (id, workspace, name, url, format, secret, kinds, envs, enabled, link, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)',
+      input.id,
+      workspace,
+      input.name,
+      input.url,
+      input.format,
+      input.secret,
+      JSON.stringify(input.kinds),
+      JSON.stringify(input.envs),
+      input.link,
+      new Date().toISOString(),
+    );
+    return this.toWebhook(this.webhookRow(workspace, input.id)!);
+  }
+
+  updateWebhook(workspace: string, id: string, change: { name?: string; url?: string; format?: WebhookFormat; kinds?: string[]; envs?: string[]; enabled?: boolean; link?: string }): { before: Webhook; after: Webhook } | null {
+    const row = this.webhookRow(workspace, id);
+    if (!row) return null;
+    const before = this.toWebhook(row);
+    this.sql.exec(
+      'UPDATE webhooks SET name = ?, url = ?, format = ?, kinds = ?, envs = ?, enabled = ?, link = ? WHERE id = ?',
+      change.name ?? row.name,
+      change.url ?? row.url,
+      change.format ?? row.format,
+      change.kinds ? JSON.stringify(change.kinds) : row.kinds,
+      change.envs ? JSON.stringify(change.envs) : row.envs,
+      change.enabled === undefined ? row.enabled : change.enabled ? 1 : 0,
+      change.link ?? row.link,
+      id,
+    );
+    // Nothing more is sent once a webhook is turned off, including what was waiting for a retry.
+    if (change.enabled === false) {
+      this.sql.exec(
+        `UPDATE deliveries SET status = 'failed', next_at = NULL, body = NULL, finished_at = ?, error = 'The webhook was turned off before this was delivered'
+         WHERE webhook = ? AND status = 'pending' AND next_at IS NOT NULL`,
+        new Date().toISOString(),
+        id,
+      );
+    }
+    return { before, after: this.toWebhook(this.webhookRow(workspace, id)!) };
+  }
+
+  removeWebhook(workspace: string, id: string): Webhook | null {
+    const row = this.webhookRow(workspace, id);
+    if (!row) return null;
+    const removed = this.toWebhook(row);
+    this.sql.exec('DELETE FROM deliveries WHERE webhook = ?', id);
+    this.sql.exec('DELETE FROM webhooks WHERE id = ?', id);
+    return removed;
+  }
+
+  rotateWebhookSecret(workspace: string, id: string, secret: string): Webhook | null {
+    const row = this.webhookRow(workspace, id);
+    if (!row) return null;
+    this.sql.exec('UPDATE webhooks SET secret = ? WHERE id = ?', secret, id);
+    return this.toWebhook(row);
+  }
+
+  deliveries(workspace: string, id: string): Delivery[] | null {
+    if (!this.webhookRow(workspace, id)) return null;
+    return this.sql
+      .exec('SELECT * FROM deliveries WHERE webhook = ? ORDER BY id DESC LIMIT ?', id, DELIVERIES_KEPT)
+      .toArray()
+      .map((row) => this.toDelivery(row));
+  }
+
+  /** Sends a sample message now, without retries, and reports how it went. */
+  async testWebhook(workspace: string, id: string, by: { id: string; name: string }): Promise<Delivery | null> {
+    const row = this.webhookRow(workspace, id);
+    if (!row) return null;
+    const event: WebhookEvent = { id: 0, at: new Date().toISOString(), workspace, actor: by, action: 'ping', kind: 'webhook', key: id, summary: `Test message for the webhook “${row.name}”` };
+    const body = row.format === 'slack' ? slackBody(event, row.link as string) : jsonBody(event, row.link as string);
+    this.sql.exec(`INSERT INTO deliveries (webhook, event, summary, body, status, created_at) VALUES (?, 'ping', ?, ?, 'pending', ?)`, id, event.summary, body, event.at);
+    const delivery = this.sql.exec('SELECT * FROM deliveries WHERE webhook = ? ORDER BY id DESC LIMIT 1', id).one();
+    await this.attempt({ ...delivery, url: row.url, secret: row.secret }, false);
+    return this.toDelivery(this.sql.exec('SELECT * FROM deliveries WHERE id = ?', delivery.id).one());
+  }
+
+  /** Queues an audit entry for every webhook of the workspace that asked for its kind and environment. */
+  private async announce(event: WebhookEvent) {
+    let queued = false;
+    for (const hook of this.sql.exec('SELECT * FROM webhooks WHERE workspace = ? AND enabled = 1', event.workspace).toArray()) {
+      const kinds = JSON.parse(hook.kinds as string) as string[];
+      const envs = JSON.parse(hook.envs as string) as string[];
+      if (kinds.length && !kinds.includes(event.kind)) continue;
+      // A webhook limited to some environments hears nothing about workspace-wide things such as members.
+      if (envs.length && (!event.envId || !envs.includes(event.envId))) continue;
+      const link = linkFor(hook.link as string, event);
+      this.sql.exec(
+        `INSERT INTO deliveries (webhook, event, summary, body, status, next_at, created_at) VALUES (?, ?, ?, ?, 'pending', ?, ?)`,
+        hook.id,
+        eventName(event.kind, event.action),
+        ((event.kind === 'flags' || event.kind === 'segments') && event.key ? `${event.key}: ${event.summary}` : event.summary).slice(0, 300),
+        hook.format === 'slack' ? slackBody(event, link) : jsonBody(event, link),
+        Date.now(),
+        event.at,
+      );
+      queued = true;
+    }
+    // Sending happens in the alarm, so whoever made the change does not wait for someone else's server.
+    if (queued) await this.ctx.storage.setAlarm(Date.now());
+  }
+
+  /** One attempt at one delivery. A failure that may pass is tried again later; anything else is final. */
+  private async attempt(row: Record<string, unknown>, retry = true) {
+    const attempts = (row.attempts as number) + 1;
+    this.sql.exec('UPDATE deliveries SET next_at = NULL, attempts = ? WHERE id = ?', attempts, row.id);
+    let code: number | null = null;
+    let failure: string | null = null;
+    let passing = true;
+    try {
+      const body = row.body as string;
+      const timestamp = String(Math.floor(Date.now() / 1000));
+      const response = await fetch(row.url as string, {
+        method: 'POST',
+        redirect: 'manual',
+        signal: AbortSignal.timeout(DELIVERY_TIMEOUT),
+        headers: {
+          'content-type': 'application/json',
+          'user-agent': 'Flagport-Webhooks/1',
+          'x-flagport-event': row.event as string,
+          'x-flagport-delivery': String(row.id),
+          'x-flagport-timestamp': timestamp,
+          'x-flagport-signature': `sha256=${await sign(row.secret as string, timestamp, body)}`,
+        },
+        body,
+      });
+      code = response.status;
+      await response.body?.cancel();
+      if (!response.ok) {
+        failure = code >= 300 && code < 400 ? 'The endpoint answered with a redirect, which is not followed' : `The endpoint answered ${code}`;
+        passing = code === 408 || code === 429 || code >= 500;
+      }
+    } catch (e) {
+      failure = e instanceof Error && e.name === 'TimeoutError' ? `No answer within ${DELIVERY_TIMEOUT / 1000} seconds` : 'Could not connect to the endpoint';
+    }
+    // A webhook that was turned off or deleted while this was in flight is not tried again.
+    const live = retry && failure && passing && this.sql.exec('SELECT enabled FROM webhooks WHERE id = ?', row.webhook).toArray()[0]?.enabled === 1;
+    const wait = live ? RETRY_AFTER[attempts - 1] : undefined;
+    if (wait !== undefined) {
+      this.sql.exec('UPDATE deliveries SET next_at = ?, code = ?, error = ? WHERE id = ?', Date.now() + wait, code, failure, row.id);
+      return;
+    }
+    this.sql.exec(
+      'UPDATE deliveries SET status = ?, code = ?, error = ?, body = NULL, finished_at = ? WHERE id = ?',
+      failure ? 'failed' : 'delivered',
+      code,
+      failure,
+      new Date().toISOString(),
+      row.id,
+    );
+    this.sql.exec(
+      `DELETE FROM deliveries WHERE webhook = ? AND status != 'pending' AND id <= (
+         SELECT id FROM deliveries WHERE webhook = ? AND status != 'pending' ORDER BY id DESC LIMIT 1 OFFSET ?
+       )`,
+      row.webhook,
+      row.webhook,
+      DELIVERIES_KEPT,
+    );
+  }
+
+  /** Sends whatever is due. Each webhook gets its messages one at a time, in order; webhooks do not wait for each other. */
+  async alarm() {
+    const due = this.sql
+      .exec(
+        `SELECT d.*, w.url, w.secret FROM deliveries d JOIN webhooks w ON w.id = d.webhook
+         WHERE d.next_at IS NOT NULL AND d.next_at <= ? ORDER BY d.id LIMIT 40`,
+        Date.now(),
+      )
+      .toArray();
+    const queues = new Map<string, Record<string, unknown>[]>();
+    for (const row of due) queues.set(row.webhook as string, [...(queues.get(row.webhook as string) ?? []), row]);
+    await Promise.all(
+      [...queues.values()].map(async (queue) => {
+        for (const row of queue) await this.attempt(row).catch(() => {});
+      }),
+    );
+    const next = this.sql.exec('SELECT MIN(next_at) AS at FROM deliveries WHERE next_at IS NOT NULL').one().at as number | null;
+    if (next !== null) await this.ctx.storage.setAlarm(Math.max(next, Date.now()));
   }
 
   // ---- Environments -----------------------------------------------------

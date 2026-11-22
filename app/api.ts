@@ -98,7 +98,7 @@ export type AuditEntry = {
   envId: string | null;
   envName: string | null;
   action: string;
-  /** flags, segments, environment or member. */
+  /** flags, segments, change, environment, member or webhook. */
   kind: string;
   key: string;
   summary: string;
@@ -106,6 +106,34 @@ export type AuditEntry = {
   before: unknown;
   after: unknown;
 };
+export type WebhookFormat = 'json' | 'slack';
+export type Delivery = {
+  id: number;
+  event: string;
+  summary: string;
+  status: 'pending' | 'delivered' | 'failed';
+  attempts: number;
+  code: number | null;
+  error: string | null;
+  createdAt: string;
+  finishedAt: string | null;
+  nextAt: string | null;
+};
+/** Where changes are sent as they happen. The full address is never returned, only enough to recognise it. */
+export type Webhook = {
+  id: string;
+  name: string;
+  urlHint: string;
+  format: WebhookFormat;
+  /** Kinds of change it is limited to; empty means all. */
+  kinds: string[];
+  /** Environment ids it is limited to; empty means all. */
+  envs: string[];
+  enabled: boolean;
+  createdAt: string;
+  last: Delivery | null;
+};
+type WebhookInput = { name: string; url: string; format: WebhookFormat; kinds: string[]; envs: string[] };
 export type AuditFilter = { env?: string; kind?: string; key?: string; actor?: string; before?: number; limit?: number };
 
 export class ApiError extends Error {
@@ -192,6 +220,13 @@ export const api = {
     if (!res.ok) throw new ApiError(`Export failed (${res.status})`, res.status);
     return res.blob();
   },
+  webhooks: () => request<Webhook[]>('GET', '/webhooks'),
+  createWebhook: (input: WebhookInput) => request<{ webhook: Webhook; secret: string }>('POST', '/webhooks', input),
+  updateWebhook: (id: string, change: Partial<WebhookInput> & { enabled?: boolean }) => request<Webhook>('PATCH', `/webhooks/${enc(id)}`, change),
+  deleteWebhook: (id: string) => request<null>('DELETE', `/webhooks/${enc(id)}`),
+  testWebhook: (id: string) => request<Delivery>('POST', `/webhooks/${enc(id)}/test`),
+  rotateWebhookSecret: (id: string) => request<{ webhook: Webhook; secret: string }>('POST', `/webhooks/${enc(id)}/secret`),
+  deliveries: (id: string) => request<Delivery[]>('GET', `/webhooks/${enc(id)}/deliveries`),
   /** `ifVersion` is the version the edit started from; the server refuses the save if someone else saved since. */
   saveFlag: (id: string, flagKey: string, flag: object, comment?: string, ifVersion?: number, bypass?: boolean) =>
     request<Flag>('PUT', `/envs/${enc(id)}/flags/${enc(flagKey)}${query({ comment, ifVersion, bypass: bypass ? 'true' : undefined })}`, flag),

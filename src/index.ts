@@ -3,6 +3,7 @@ import { OWNER, ROLES, RegistryDO, type Actor, type AuditInput, type Role } from
 import { validKey, type Json } from './flag';
 import { fetchFromLaunchDarkly } from './ldimport';
 import { handleSdk } from './sdk';
+import { WEBHOOK_KINDS, checkWebhookUrl, type Delivery, type Webhook, type WebhookFormat } from './webhooks';
 
 export { EnvironmentDO, RegistryDO };
 
@@ -139,6 +140,110 @@ async function handleMembers(request: Request, env: Env, actor: Actor, parts: st
   return error('Not found', 404);
 }
 
+/** Webhooks: where the workspace's audit entries are sent as they happen. Admins only, because the addresses are secrets. */
+async function handleWebhooks(request: Request, env: Env, actor: Actor, parts: string[], log: (entry: Omit<AuditInput, 'workspace' | 'actor'>) => Promise<void>): Promise<Response> {
+  if (!can(actor, 'admin')) return forbidden('admin');
+  const method = request.method;
+  const here = new URL(request.url);
+  const allowLocal = here.hostname === 'localhost' || here.hostname === '127.0.0.1';
+  const link = `${here.origin}/app/`;
+  // Cast because the generated stub types lose these shapes across the RPC boundary.
+  const reg = registry(env) as unknown as {
+    webhooks(workspace: string): Promise<Webhook[]>;
+    createWebhook(workspace: string, input: object): Promise<Webhook | 'full'>;
+    updateWebhook(workspace: string, id: string, change: object): Promise<{ before: Webhook; after: Webhook } | null>;
+    removeWebhook(workspace: string, id: string): Promise<Webhook | null>;
+    rotateWebhookSecret(workspace: string, id: string, secret: string): Promise<Webhook | null>;
+    deliveries(workspace: string, id: string): Promise<Delivery[] | null>;
+    testWebhook(workspace: string, id: string, by: { id: string; name: string }): Promise<Delivery | null>;
+    list(workspace: string): Promise<{ id: string }[]>;
+  };
+  const shown = (hook: Webhook) => ({ name: hook.name, url: hook.urlHint, format: hook.format, kinds: hook.kinds, envs: hook.envs, enabled: hook.enabled });
+  const newSecret = () => `whsec_${randomHex(24)}`;
+
+  /** Reads the fields a webhook can be created or changed with. Absent fields stay undefined. */
+  const read = async (body: Json | null): Promise<{ error: string } | { name?: string; url?: string; format?: WebhookFormat; kinds?: string[]; envs?: string[]; enabled?: boolean }> => {
+    const out: { name?: string; url?: string; format?: WebhookFormat; kinds?: string[]; envs?: string[]; enabled?: boolean } = {};
+    if (body?.name !== undefined) {
+      if (typeof body.name !== 'string' || !body.name.trim()) return { error: 'A name is required' };
+      out.name = body.name.trim().slice(0, 80);
+    }
+    if (body?.url !== undefined) {
+      const checked = checkWebhookUrl(body.url, allowLocal);
+      if ('error' in checked) return checked;
+      out.url = checked.url;
+    }
+    if (body?.format !== undefined) {
+      if (body.format !== 'json' && body.format !== 'slack') return { error: 'format must be json or slack' };
+      out.format = body.format;
+    }
+    if (body?.kinds !== undefined) {
+      if (!Array.isArray(body.kinds) || body.kinds.some((kind) => !WEBHOOK_KINDS.includes(kind as string))) return { error: `kinds may contain: ${WEBHOOK_KINDS.join(', ')}` };
+      out.kinds = [...new Set(body.kinds as string[])];
+    }
+    if (body?.envs !== undefined) {
+      const mine = new Set((await reg.list(actor.workspace)).map((e) => e.id));
+      if (!Array.isArray(body.envs) || body.envs.some((id) => !mine.has(id as string))) return { error: 'envs must be ids of environments in this workspace' };
+      out.envs = [...new Set(body.envs as string[])];
+    }
+    if (body?.enabled !== undefined) {
+      if (typeof body.enabled !== 'boolean') return { error: 'enabled must be true or false' };
+      out.enabled = body.enabled;
+    }
+    return out;
+  };
+
+  if (parts.length === 1) {
+    if (method === 'GET') return json(await reg.webhooks(actor.workspace));
+    if (method === 'POST') {
+      const input = await read((await readJson(request)) as Json | null);
+      if ('error' in input) return error(input.error, 400);
+      if (!input.name || !input.url) return error('A name and a URL are required', 400);
+      const secret = newSecret();
+      const format = input.format ?? (new URL(input.url).hostname === 'hooks.slack.com' ? 'slack' : 'json');
+      const webhook = await reg.createWebhook(actor.workspace, { id: randomHex(8), name: input.name, url: input.url, format, kinds: input.kinds ?? [], envs: input.envs ?? [], secret, link });
+      if (webhook === 'full') return error('This workspace has reached its limit of webhooks', 409);
+      await log({ action: 'created', kind: 'webhook', key: webhook.id, summary: `Added the webhook ${webhook.name}`, after: shown(webhook) });
+      return json({ webhook, secret }, 201);
+    }
+    return error('Method not allowed', 405);
+  }
+
+  const id = parts[1];
+  if (parts.length === 2 && method === 'PATCH') {
+    const input = await read((await readJson(request)) as Json | null);
+    if ('error' in input) return error(input.error, 400);
+    const result = await reg.updateWebhook(actor.workspace, id, { ...input, link });
+    if (!result) return error('Webhook not found', 404);
+    const { before, after } = result;
+    const summary = before.enabled !== after.enabled && Object.keys(input).length === 1 ? `Turned ${after.enabled ? 'on' : 'off'} the webhook ${after.name}` : `Changed the webhook ${after.name}`;
+    await log({ action: 'updated', kind: 'webhook', key: id, summary, before: shown(before), after: shown(after) });
+    return json(after);
+  }
+  if (parts.length === 2 && method === 'DELETE') {
+    const removed = await reg.removeWebhook(actor.workspace, id);
+    if (!removed) return error('Webhook not found', 404);
+    await log({ action: 'deleted', kind: 'webhook', key: id, summary: `Removed the webhook ${removed.name}`, before: shown(removed) });
+    return new Response(null, { status: 204 });
+  }
+  if (parts.length === 3 && parts[2] === 'deliveries' && method === 'GET') {
+    const list = await reg.deliveries(actor.workspace, id);
+    return list ? json(list) : error('Webhook not found', 404);
+  }
+  if (parts.length === 3 && parts[2] === 'test' && method === 'POST') {
+    const delivery = await reg.testWebhook(actor.workspace, id, { id: actor.id, name: actor.name });
+    return delivery ? json(delivery) : error('Webhook not found', 404);
+  }
+  if (parts.length === 3 && parts[2] === 'secret' && method === 'POST') {
+    const secret = newSecret();
+    const webhook = await reg.rotateWebhookSecret(actor.workspace, id, secret);
+    if (!webhook) return error('Webhook not found', 404);
+    await log({ action: 'updated', kind: 'webhook', key: id, summary: `Replaced the signing secret of the webhook ${webhook.name}` });
+    return json({ webhook, secret });
+  }
+  return error('Not found', 404);
+}
+
 async function handleAdmin(request: Request, env: Env, path: string): Promise<Response> {
   const method = request.method;
   const url = new URL(request.url);
@@ -159,6 +264,7 @@ async function handleAdmin(request: Request, env: Env, path: string): Promise<Re
 
   if (parts.length === 1 && parts[0] === 'me' && method === 'GET') return json({ id: actor.id, name: actor.name, role: actor.role });
   if (parts[0] === 'members') return handleMembers(request, env, actor, parts, log);
+  if (parts[0] === 'webhooks') return handleWebhooks(request, env, actor, parts, log);
 
   if (parts.length === 1 && parts[0] === 'audit' && method === 'GET') {
     const q = url.searchParams;

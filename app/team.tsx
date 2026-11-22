@@ -1,5 +1,5 @@
 // Members: each person or service signs in with a key of their own, and a role decides what it may do.
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { api, auth, ROLES, type Member, type Role } from './api';
 import { ago } from './model';
 import { ROLE_NOTES, useApp, useCan } from './state';
@@ -8,14 +8,14 @@ import { Button, CopyButton, Field, Icon, Modal, ModalForm, useToast } from './u
 const label = (role: Role) => role[0].toUpperCase() + role.slice(1);
 
 /** Shows a key once. It cannot be shown again, so closing asks for confirmation that it was saved. */
-function KeyReveal({ title, name, secret, onClose }: { title: string; name: string; secret: string; onClose: () => void }) {
+export function KeyReveal({ title, name, secret, onClose, label = 'The key is saved somewhere safe', children }: { title: string; name: string; secret: string; onClose: () => void; label?: string; children?: ReactNode }) {
   const [saved, setSaved] = useState(false);
   return (
     <Modal title={title} onClose={() => saved && onClose()}>
       <div className="modal-body">
-        <p>This is the only time the key for <strong>{name}</strong> is shown. The server keeps only a hash of it. Hand it over through a password manager, not chat or email.</p>
+        <p>{children ?? <>This is the only time the key for <strong>{name}</strong> is shown. The server keeps only a hash of it. Hand it over through a password manager, not chat or email.</>}</p>
         <div className="secret"><code>{secret}</code><CopyButton value={secret} /></div>
-        <label className="check"><input type="checkbox" checked={saved} onChange={(event) => setSaved(event.target.checked)} />The key is saved somewhere safe</label>
+        <label className="check"><input type="checkbox" checked={saved} onChange={(event) => setSaved(event.target.checked)} />{label}</label>
       </div>
       <footer className="modal-foot"><Button kind="primary" disabled={!saved} onClick={onClose}>Done</Button></footer>
     </Modal>
